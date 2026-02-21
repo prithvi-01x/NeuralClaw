@@ -1,0 +1,74 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# NeuralClaw — Default Configuration
+# All secrets (API keys, tokens) come from .env — never put them here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+agent:
+  name: "NeuralClaw"
+  version: "1.0.0"
+  max_iterations_per_turn: 10
+  max_turn_timeout_seconds: 300
+  default_trust_level: "low"       # low | medium | high
+
+llm:
+  default_provider: "openai"       # openai | anthropic | ollama
+  default_model: "gpt-4o"
+  temperature: 0.7
+  max_tokens: 4096
+  providers:
+    openai:
+      base_url:                    # null = use official OpenAI endpoint
+    anthropic: {}
+    ollama:
+      base_url: "http://localhost:11434"
+
+memory:
+  chroma_persist_dir: "./data/chroma"
+  sqlite_path: "./data/sqlite/episodes.db"
+  embedding_model: "all-MiniLM-L6-v2"
+  max_short_term_turns: 20
+  relevance_threshold: 0.85
+
+tools:
+  browser:
+    headless: true
+    user_agent: "Mozilla/5.0 (compatible; NeuralClaw/1.0)"
+    timeout_ms: 15000
+  terminal:
+    working_dir: "~/agent_files"
+    default_timeout_seconds: 30
+    docker_sandbox: false
+    docker_image: "python:3.11-slim"
+    whitelist_extra: []            # Additional allowed commands beyond defaults
+  filesystem:
+    allowed_paths:
+      - "~/agent_files"
+
+safety:
+  default_permission_level: "read"
+  require_confirmation_for:
+    - "HIGH"
+    - "CRITICAL"
+
+mcp:
+  servers:
+    blender:
+      transport: stdio
+      command: "uvx"
+      args: ["blender-mcp"]
+      enabled: false               # Set true when Blender is running
+
+telegram:
+  authorized_user_ids: []          # Populated from TELEGRAM_USER_ID env var
+
+scheduler:
+  timezone: "UTC"
+  max_concurrent_tasks: 3
+
+logging:
+  level: "INFO"                    # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  log_dir: "./data/logs"
+  max_file_size_mb: 100
+  backup_count: 5
+  console_output: true
+  json_format: true

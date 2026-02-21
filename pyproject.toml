@@ -1,0 +1,27 @@
+[project]
+name = "neuralclaw"
+version = "1.0.0"
+description = "Local-first autonomous AI agent platform"
+requires-python = ">=3.11"
+readme = "README.md"
+authors = [
+    { name = "Solo Developer" }
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+select = ["E", "F", "I", "B", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=. --cov-report=html --cov-report=term-missing"
+
+[tool.coverage.run]
+omit = ["tests/*", ".venv/*", "scripts/*"]
