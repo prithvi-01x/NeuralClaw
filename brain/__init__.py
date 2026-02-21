@@ -1,25 +1,11 @@
 """
 brain/__init__.py — NeuralClaw LLM Brain
-
-Public interface for the brain module.
-
-Usage:
-    from brain import LLMClientFactory, LLMConfig, Message, Role
-
-    client = LLMClientFactory.from_settings(settings)
-    # or
-    client = LLMClientFactory.create("openai", api_key="sk-...")
-
-    response = await client.generate(
-        messages=[Message.user("Hello!")],
-        config=LLMConfig(model="gpt-4o"),
-    )
-    print(response.content)
 """
 
 from __future__ import annotations
 
 from typing import Optional
+import os
 
 from brain.llm_client import (
     BaseLLMClient,
@@ -43,16 +29,13 @@ from brain.types import (
 )
 
 __all__ = [
-    # Factory
     "LLMClientFactory",
-    # Base client + exceptions
     "BaseLLMClient",
     "LLMError",
     "LLMConnectionError",
     "LLMRateLimitError",
     "LLMContextError",
     "LLMInvalidRequestError",
-    # Types
     "Message",
     "LLMConfig",
     "LLMResponse",
@@ -72,22 +55,11 @@ _DEFAULT_MODELS: dict[str, str] = {
     "ollama": "llama3.1",
     "openrouter": "openai/gpt-4o",
     "gemini": "gemini-1.5-pro",
+    "bytez": "openai/gpt-5",  # 🟢 NEW
 }
 
 
 class LLMClientFactory:
-    """
-    Creates and configures LLM clients.
-
-    Preferred usage — create from settings object:
-        client = LLMClientFactory.from_settings(settings)
-
-    Manual usage:
-        client = LLMClientFactory.create(
-            provider="anthropic",
-            api_key="sk-ant-...",
-        )
-    """
 
     @staticmethod
     def create(
@@ -96,40 +68,29 @@ class LLMClientFactory:
         base_url: Optional[str] = None,
         **kwargs,
     ) -> BaseLLMClient:
-        """
-        Instantiate an LLM client for the given provider.
 
-        Args:
-            provider:  One of: openai | anthropic | ollama | openrouter | gemini
-            api_key:   API key (not required for ollama)
-            base_url:  Override the default API endpoint
-            **kwargs:  Provider-specific extras (e.g. organization for OpenAI)
-
-        Returns:
-            A configured BaseLLMClient subclass.
-
-        Raises:
-            ValueError: Unknown provider name.
-            LLMConnectionError: Missing API key for a cloud provider.
-        """
         provider = provider.lower().strip()
 
+        # ───────── OPENAI
         if provider == "openai":
             if not api_key:
                 raise LLMConnectionError("OPENAI_API_KEY is required", provider="openai")
             from brain.openai_client import OpenAIClient
             return OpenAIClient(api_key=api_key, base_url=base_url, **kwargs)
 
+        # ───────── ANTHROPIC
         elif provider == "anthropic":
             if not api_key:
                 raise LLMConnectionError("ANTHROPIC_API_KEY is required", provider="anthropic")
             from brain.anthropic_client import AnthropicClient
             return AnthropicClient(api_key=api_key, base_url=base_url)
 
+        # ───────── OLLAMA
         elif provider == "ollama":
             from brain.ollama_client import OllamaClient
             return OllamaClient(base_url=base_url or "http://localhost:11434/v1")
 
+        # ───────── OPENROUTER
         elif provider == "openrouter":
             if not api_key:
                 raise LLMConnectionError("OPENROUTER_API_KEY is required", provider="openrouter")
@@ -140,41 +101,40 @@ class LLMClientFactory:
                 site_url=kwargs.get("site_url", "https://github.com/neuralclaw"),
             )
 
+        # ───────── GEMINI
         elif provider == "gemini":
             if not api_key:
                 raise LLMConnectionError("GEMINI_API_KEY is required", provider="gemini")
             from brain.gemini_client import GeminiClient
             return GeminiClient(api_key=api_key)
 
+        # ───────── 🟢 BYTEZ (NEW)
+        elif provider == "bytez":
+            api_key = api_key or os.getenv("BYTEZ_API_KEY")
+            if not api_key:
+                raise LLMConnectionError("BYTEZ_API_KEY is required", provider="bytez")
+
+            from brain.bytez_client import BytezClient
+            return BytezClient(api_key=api_key)
+
         else:
             raise ValueError(
                 f"Unknown LLM provider: '{provider}'. "
-                f"Valid options: openai, anthropic, ollama, openrouter, gemini"
+                f"Valid options: openai, anthropic, ollama, openrouter, gemini, bytez"
             )
 
     @staticmethod
     def from_settings(settings) -> BaseLLMClient:
-        """
-        Create an LLM client from the NeuralClaw Settings object.
 
-        Reads provider, model, and API keys from settings + environment.
-        This is the preferred way to create a client in production code.
-
-        Args:
-            settings: NeuralClaw Settings instance from config.settings
-
-        Returns:
-            Configured BaseLLMClient for the default provider.
-        """
         provider = settings.default_llm_provider
 
-        # Map provider → API key from settings
         api_key_map = {
             "openai": settings.openai_api_key,
             "anthropic": settings.anthropic_api_key,
-            "ollama": None,  # no key needed
+            "ollama": None,
             "openrouter": getattr(settings, "openrouter_api_key", None),
             "gemini": getattr(settings, "gemini_api_key", None),
+            "bytez": os.getenv("BYTEZ_API_KEY"),  # 🟢 NEW
         }
 
         base_url_map = {
@@ -189,5 +149,4 @@ class LLMClientFactory:
 
     @staticmethod
     def default_model(provider: str) -> str:
-        """Return the recommended default model for a provider."""
         return _DEFAULT_MODELS.get(provider.lower(), "gpt-4o")

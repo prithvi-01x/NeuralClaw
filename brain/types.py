@@ -2,7 +2,7 @@
 brain/types.py — NeuralClaw Brain Data Models
 
 All shared types used across LLM clients and the agent orchestrator.
-Providers (OpenAI, Anthropic, Ollama, OpenRouter, Gemini) all map
+Providers (OpenAI, Anthropic, Ollama, OpenRouter, Gemini, Bytez) all map
 their native response shapes into these types.
 """
 
@@ -31,6 +31,7 @@ class Provider(str, Enum):
     OLLAMA = "ollama"
     OPENROUTER = "openrouter"
     GEMINI = "gemini"
+    BYTEZ = "bytez"          # ← NEW PROVIDER
 
 
 class FinishReason(str, Enum):

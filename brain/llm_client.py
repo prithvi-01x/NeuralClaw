@@ -1,7 +1,7 @@
 """
 brain/llm_client.py — Abstract LLM Client
 
-All provider implementations (OpenAI, Anthropic, Ollama, OpenRouter, Gemini)
+All provider implementations (OpenAI, Anthropic, Ollama, OpenRouter, Gemini, Bytez)
 must subclass BaseLLMClient and implement generate().
 
 The agent orchestrator only ever calls generate() — it never knows which
@@ -13,7 +13,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from brain.types import LLMConfig, LLMResponse, Message, ToolSchema
+from brain.types import LLMConfig, LLMResponse, Message, ToolSchema, Provider
 
 
 class BaseLLMClient(ABC):
@@ -23,11 +23,6 @@ class BaseLLMClient(ABC):
     Subclasses must implement:
       - generate()     → call the LLM, return normalised LLMResponse
       - health_check() → verify connectivity to the provider
-
-    Subclasses should also implement:
-      - _to_provider_messages() → translate Message list to provider format
-      - _to_provider_tools()    → translate ToolSchema list to provider format
-      - _from_provider_response() → translate raw API response to LLMResponse
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
@@ -43,20 +38,6 @@ class BaseLLMClient(ABC):
     ) -> LLMResponse:
         """
         Call the LLM and return a normalised response.
-
-        Args:
-            messages:  Full conversation history (system + user + assistant turns).
-            config:    Model, temperature, max_tokens, etc.
-            tools:     Optional list of tools the LLM may call.
-
-        Returns:
-            LLMResponse with content and/or tool_calls populated.
-
-        Raises:
-            LLMConnectionError: Provider unreachable or auth failed.
-            LLMRateLimitError:  Hit rate limit — caller should back off.
-            LLMContextError:    Input too long for the model's context window.
-            LLMError:           Any other provider error.
         """
         ...
 
@@ -67,6 +48,48 @@ class BaseLLMClient(ABC):
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__}>"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Client Factory (NEW — supports Bytez)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_llm_client(
+    provider: Provider,
+    api_key: Optional[str],
+    base_url: Optional[str] = None,
+):
+    """
+    Central factory that returns correct client instance.
+    """
+
+    if provider == Provider.OPENAI:
+        from brain.openai_client import OpenAIClient
+        return OpenAIClient(api_key=api_key, base_url=base_url)
+
+    elif provider == Provider.ANTHROPIC:
+        from brain.anthropic_client import AnthropicClient
+        return AnthropicClient(api_key=api_key)
+
+    elif provider == Provider.OLLAMA:
+        from brain.ollama_client import OllamaClient
+        return OllamaClient()
+
+    elif provider == Provider.OPENROUTER:
+        from brain.openrouter_client import OpenRouterClient
+        return OpenRouterClient(api_key=api_key)
+
+    elif provider == Provider.GEMINI:
+        from brain.gemini_client import GeminiClient
+        return GeminiClient(api_key=api_key)
+
+    # 🟢 NEW: BYTEZ SUPPORT
+    elif provider == Provider.BYTEZ:
+        from brain.bytez_client import BytezClient
+        return BytezClient(api_key=api_key)
+
+    else:
+        raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
