@@ -131,19 +131,11 @@ async def main() -> int:
 
 async def _run_cli(settings, log) -> None:
     """
-    Placeholder CLI runner.
-    Phase 5 will replace this with the full interactive REPL.
+    Full CLI REPL — Phase 5 implementation.
+    Delegates to interfaces/cli.py.
     """
-    from rich.console import Console
-    console = Console()
-    console.print(
-        f"\n[bold green]NeuralClaw[/] [dim]v{settings.agent.get('version', '1.0.0')}[/]\n"
-        f"LLM: [cyan]{settings.default_llm_provider}[/] / [cyan]{settings.default_llm_model}[/]\n"
-        f"Type [bold]exit[/] to quit.\n"
-    )
-    log.info("cli.ready")
-    # Full REPL loop implemented in Phase 5 (interfaces/cli.py)
-    console.print("[dim]CLI interface placeholder — Phase 5 will add the full REPL.[/]")
+    from interfaces.cli import run_cli
+    await run_cli(settings, log)
 
 
 async def _run_telegram(settings, log) -> None:
