@@ -4,7 +4,7 @@
 
 # REQUIRED for loader
 default_llm_provider: "ollama"
-default_llm_model: "gemma3:4b"
+default_llm_model: "qwen2.5:3b"
 
 agent:
   name: "NeuralClaw"
@@ -15,7 +15,7 @@ agent:
 
 llm:
   default_provider: "ollama"
-  default_model: "gemma3:4b"
+  default_model: "qwen2.5:3b"
   temperature: 0.4
   max_tokens: 4096
 
@@ -29,7 +29,7 @@ llm:
 memory:
   chroma_persist_dir: "./data/chroma"
   sqlite_path: "./data/sqlite/episodes.db"
-  embedding_model: "embeddinggemma"
+  embedding_model: "qwen2.5:3b"
   max_short_term_turns: 20
   relevance_threshold: 0.85
 

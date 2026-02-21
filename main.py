@@ -140,11 +140,26 @@ async def _run_cli(settings, log) -> None:
 
 async def _run_telegram(settings, log) -> None:
     """
-    Placeholder Telegram runner.
-    Phase 7 will replace this with the full aiogram bot.
+    Launch the real Telegram bot interface.
+    Delegates to interfaces/telegram.py
     """
-    log.info("telegram.placeholder", note="Phase 7 will implement full bot")
-    print("Telegram interface placeholder — Phase 7 will add the full bot.")
+
+    try:
+        from interfaces.telegram import run_telegram
+    except Exception as e:
+        log.exception("telegram.import_failed", error=str(e))
+        print("\n❌ Failed to import Telegram interface.\n", file=sys.stderr)
+        raise
+
+    log.info("telegram.interface_bootstrap")
+
+    try:
+        await run_telegram(settings=settings, log=log)
+    except KeyboardInterrupt:
+        log.info("telegram.interrupted")
+    except Exception as e:
+        log.exception("telegram.crashed", error=str(e))
+        raise
 
 
 if __name__ == "__main__":
