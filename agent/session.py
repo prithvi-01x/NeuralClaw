@@ -185,7 +185,7 @@ class Session:
     # ── Confirmation ──────────────────────────────────────────────────────────
 
     def register_confirmation(self, tool_call_id: str) -> "asyncio.Future[bool]":
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
         self._pending_confirmations[tool_call_id] = future
         return future

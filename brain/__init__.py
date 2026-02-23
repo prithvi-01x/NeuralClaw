@@ -145,7 +145,7 @@ class LLMClientFactory:
             "ollama":      None,
             "openrouter":  getattr(settings, "openrouter_api_key", None),
             "gemini":      getattr(settings, "gemini_api_key", None),
-            "bytez":       os.getenv("BYTEZ_API_KEY"),
+            "bytez":       settings.bytez_api_key,
         }
         base_url_map = {
             "ollama": settings.ollama_base_url + "/v1",

@@ -121,7 +121,51 @@ class SafetyKernel:
             effective_risk, score_reason = score_tool_call(tool_call, schema)
 
         else:
-            # For all other tools, just score based on args
+            # ── MCP tools and all other non-terminal/filesystem tools ─────────
+            # MCP tools land here.  They bypass the binary whitelist because
+            # their category is "mcp.<server_name>" rather than "terminal",
+            # but they may still accept path or command arguments.
+            # We apply the appropriate check whenever we see recognisable
+            # argument keys so a malicious or compromised MCP server cannot
+            # trivially escape the sandbox via argument passing.
+
+            args = tool_call.arguments
+
+            # Check any argument that looks like it carries a shell command.
+            _CMD_ARG_KEYS = ("command", "cmd", "shell", "exec", "run", "script")
+            for key in _CMD_ARG_KEYS:
+                if key in args and isinstance(args[key], str):
+                    allowed, reason, is_high_risk = check_command(
+                        args[key], self.extra_allowed_commands
+                    )
+                    if not allowed:
+                        return self._decision(
+                            tool_call, RiskLevel.CRITICAL, SafetyStatus.BLOCKED,
+                            f"MCP tool argument '{key}' blocked by command whitelist: {reason}"
+                        )
+                    if is_high_risk:
+                        effective_risk = max(effective_risk, RiskLevel.HIGH) \
+                            if "effective_risk" in dir() else RiskLevel.HIGH
+
+            # Check any argument that looks like it carries a filesystem path.
+            _PATH_ARG_KEYS = ("path", "file_path", "filepath", "file", "dir",
+                              "directory", "dest", "destination", "source", "src")
+            for key in _PATH_ARG_KEYS:
+                if key in args and isinstance(args[key], str):
+                    _WRITE_KEYWORDS = ("write", "create", "delete", "remove",
+                                       "append", "move", "copy", "upload")
+                    operation = "write" if any(
+                        kw in tool_call.name for kw in _WRITE_KEYWORDS
+                    ) else "read"
+                    path_allowed, path_reason = check_path(
+                        args[key], self.allowed_paths, operation
+                    )
+                    if not path_allowed:
+                        return self._decision(
+                            tool_call, RiskLevel.CRITICAL, SafetyStatus.BLOCKED,
+                            f"MCP tool argument '{key}' blocked by path whitelist: {path_reason}"
+                        )
+
             effective_risk, score_reason = score_tool_call(tool_call, schema)
 
         # ── Step 3: Apply trust level to determine final status ───────────────

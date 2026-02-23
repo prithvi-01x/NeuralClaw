@@ -60,9 +60,12 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset([
     "uname", "lsb_release", "hostname",
     "lscpu", "lsblk",
     "free", "vmstat", "iostat",
-    "env", "printenv",
+    # NOTE: env and printenv removed — see comment below
     # Process inspection
     "pgrep", "pstree",
+    # NOTE: "env" and "printenv" removed — they dump the full process
+    #       environment including every API key and secret token inherited
+    #       by the agent process, enabling trivial one-call exfiltration.
     # Development — interpreters
     "python", "python3", "python3.11", "python3.12",
     "node", "npx",
@@ -81,7 +84,8 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset([
     "pip", "pip3", "uv", "npm", "yarn", "pnpm", "bun",
     # File operations
     "touch", "mkdir", "rmdir", "cp", "mv", "ln",
-    "tee",
+    # NOTE: "tee" removed — it can redirect output to arbitrary sinks
+    #       including /dev/tcp pseudo-files for exfiltration.
     # Permissions (flagged high-risk)
     "chmod", "chown",
     # Misc utilities
@@ -90,9 +94,13 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset([
     "md5sum", "sha1sum", "sha256sum", "sha512sum",
     "base64",
     "xargs",
-    "ssh", "scp", "rsync",
+    "ssh", "scp",
+    # NOTE: "rsync" removed — rsync's ssh transport can exfiltrate files to
+    #       arbitrary remote hosts without triggering pipe-to-shell patterns.
     "docker", "kubectl", "helm",
     "ffmpeg",
+    # NOTE: "openssl" kept for digest/encode use but remote connection
+    #       patterns (s_client, s_time, etc.) are hard-blocked below.
     "openssl",
 ])
 
@@ -104,10 +112,9 @@ HIGH_RISK_COMMANDS: frozenset[str] = frozenset([
     "npm", "yarn", "pnpm", "bun",
     "cargo", "go",
     "curl", "wget",
-    "ssh", "scp", "rsync",
+    "ssh", "scp",
     "docker", "podman", "kubectl", "helm",
     "chmod", "chown",
-    "tee",
     "ffmpeg",
     "openssl",
     "make",
@@ -168,6 +175,20 @@ BLOCKED_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bnetcat\b.*-[lek]"),                 "netcat listener/exec mode is blocked"),
     # eval with subshell
     (re.compile(r"\beval\b.*\$\("),                     "eval with subshell substitution is blocked"),
+    # ── Interpreter inline-code flags (CRITICAL-1) ────────────────────────────
+    # python/node -c/-e allow arbitrary code execution and fully bypass the
+    # command whitelist — they are unconditionally blocked.
+    (re.compile(r"\bpython[0-9.]*\b.*\s-[ce]\s"),       "python -c/-e inline code execution is blocked"),
+    (re.compile(r"\bpython[0-9.]*\b.*\s-[ce]$"),        "python -c/-e inline code execution is blocked"),
+    (re.compile(r"\bnode\b.*\s-e\s"),                   "node -e inline code execution is blocked"),
+    (re.compile(r"\bnode\b.*\s-e$"),                    "node -e inline code execution is blocked"),
+    (re.compile(r"\bnpx\b.*\s-e\s"),                    "npx -e inline code execution is blocked"),
+    # ── Remote-connection exfiltration paths (MEDIUM-2) ──────────────────────
+    # openssl s_client / s_time / dgram open raw TLS sockets to arbitrary hosts
+    (re.compile(r"\bopenssl\b.*(s_client|s_time|dgram)", re.I),
+                                                        "openssl network-connect subcommands are blocked"),
+    # rsync to a remote destination (host: or user@host:) enables SSH exfil
+    (re.compile(r"\brsync\b.*\s[\w.@-]+:"),            "rsync to remote destination is blocked"),
 ]
 
 

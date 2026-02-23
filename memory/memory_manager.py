@@ -55,8 +55,9 @@ class MemoryManager:
         sqlite_path: str = "./data/sqlite/episodes.db",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
         max_short_term_turns: int = 20,
-        relevance_threshold: float = 0.85,
+        relevance_threshold: float = 0.55,
     ):
+        self._relevance_threshold = relevance_threshold
         self.embedder = Embedder(model_name=embedding_model)
         self.long_term = LongTermMemory(
             persist_dir=chroma_persist_dir,
@@ -280,7 +281,7 @@ class MemoryManager:
         lines = ["## Relevant Memory\n"]
         for collection, entries in results.items():
             for entry in entries:
-                if entry.relevance_score > 0.3:
+                if entry.relevance_score > self._relevance_threshold:
                     lines.append(f"[{collection}] {entry.text[:300]}")
 
         if len(lines) == 1:

@@ -26,6 +26,26 @@ from tools.types import RiskLevel
 _MAX_READ_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
+def _revalidate_path(resolved: "Path", allowed_paths: list[str] | None = None) -> None:
+    """
+    Re-check the resolved path against the safety whitelist immediately before
+    I/O to close the TOCTOU window between SafetyKernel.evaluate() and actual
+    file access.  If the path is now outside the allowed set (e.g. a symlink
+    was swapped between check and use), raise PermissionError.
+
+    This is an in-process defence layer; it does not replace the SafetyKernel
+    check — it complements it.
+    """
+    from safety.whitelist import check_path
+    from config.settings import get_settings
+    _allowed = allowed_paths or get_settings().tools.filesystem.allowed_paths
+    ok, reason = check_path(str(resolved), _allowed, operation="read")
+    if not ok:
+        raise PermissionError(
+            f"Path validation failed at execution time (possible symlink swap): {reason}"
+        )
+
+
 @registry.register(
     name="file_read",
     description=(
@@ -53,6 +73,7 @@ _MAX_READ_BYTES = 10 * 1024 * 1024  # 10 MB
 )
 async def file_read(path: str, encoding: str = "utf-8") -> str:
     resolved = Path(path).expanduser().resolve()
+    _revalidate_path(resolved)          # TOCTOU defence: re-check after resolve
     if not resolved.exists():
         raise FileNotFoundError(f"File not found: {resolved}")
     if not resolved.is_file():
@@ -108,6 +129,7 @@ async def file_write(
     create_dirs: bool = True,
 ) -> str:
     resolved = Path(path).expanduser().resolve()
+    _revalidate_path(resolved)          # TOCTOU defence: re-check after resolve
     if create_dirs:
         resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(content, encoding=encoding)
@@ -130,6 +152,7 @@ async def file_write(
 )
 async def file_append(path: str, content: str) -> str:
     resolved = Path(path).expanduser().resolve()
+    _revalidate_path(resolved)          # TOCTOU defence: re-check after resolve
     resolved.parent.mkdir(parents=True, exist_ok=True)
     with resolved.open("a", encoding="utf-8") as f:
         f.write(content)

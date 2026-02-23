@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 from pathlib import Path
 
@@ -23,6 +24,54 @@ from tools.types import RiskLevel
 # Absolute cap on output fed back to LLM
 MAX_OUTPUT_BYTES = 50_000
 DEFAULT_TIMEOUT = 30
+
+# Env-var name patterns that indicate secrets.  Any variable whose name
+# matches one of these patterns is stripped from the subprocess environment
+# before execution so that commands like `printenv` cannot exfiltrate them.
+_SECRET_ENV_PATTERNS: list[re.Pattern] = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"API[_-]?KEY",
+        r"SECRET",
+        r"PASSWORD",
+        r"PASSWD",
+        r"TOKEN",
+        r"AUTH",
+        r"CREDENTIAL",
+        r"PRIVATE[_-]?KEY",
+        r"ACCESS[_-]?KEY",
+        r"TELEGRAM",
+        r"DISCORD",
+        r"SLACK",
+        r"OPENAI",
+        r"ANTHROPIC",
+        r"GEMINI",
+        r"BYTEZ",
+        r"DATABASE[_-]?URL",
+        r"DB[_-]?(PASS|USER|HOST|URL)",
+        r"REDIS[_-]?URL",
+        r"MONGO.*URI",
+        r"PGPASSWORD",
+        r"AWS[_-]",
+        r"GCP[_-]",
+        r"AZURE[_-]",
+    ]
+]
+
+
+def _safe_env() -> dict[str, str]:
+    """
+    Return a copy of os.environ with secret variables removed.
+
+    This prevents the subprocess from inheriting API keys, tokens, and other
+    credentials that the agent process has loaded from .env / the environment.
+    Commands like `printenv` or `env` will only see non-sensitive variables.
+    """
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not any(pat.search(key) for pat in _SECRET_ENV_PATTERNS)
+    }
 
 
 @registry.register(
@@ -68,6 +117,22 @@ async def terminal_exec(
     Returns a JSON string with keys: stdout, stderr, exit_code, command.
     """
     resolved_dir = Path(working_dir).expanduser().resolve()
+
+    # Validate working_dir is within an allowed path before using it as cwd.
+    # The safety kernel only checks the command argument; this closes the gap.
+    from safety.whitelist import check_path
+    from config.settings import get_settings
+    _allowed = get_settings().tools.filesystem.allowed_paths
+    _ok, _reason = check_path(str(resolved_dir), _allowed, operation="read")
+    if not _ok:
+        return json.dumps({
+            "command": command,
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": f"working_dir blocked by safety policy: {_reason}",
+            "error": True,
+        })
+
     resolved_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -76,7 +141,7 @@ async def terminal_exec(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(resolved_dir),
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env={**_safe_env(), "PYTHONUNBUFFERED": "1"},
         )
 
         try:

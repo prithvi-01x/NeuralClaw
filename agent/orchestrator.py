@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Callable, Optional
 
 from brain.llm_client import BaseLLMClient, LLMInvalidRequestError
@@ -142,7 +142,7 @@ class Orchestrator:
 
     async def run_autonomous(
         self, session: Session, goal: str
-    ) -> AsyncIterator[AgentResponse]:
+    ) -> AsyncGenerator[AgentResponse, None]:
         """
         Autonomous mode: plan → execute each step → reflect.
         Yields AgentResponse objects so the interface can stream progress.

@@ -331,8 +331,7 @@ def load_settings(config_path: str | Path = "config/config.yaml") -> Settings:
     init_kwargs = {k: v for k, v in yaml_data.items() if k in _KNOWN_SECTIONS}
 
     instance = Settings(**init_kwargs)
-    if _singleton is None:
-        _singleton = instance
+    _singleton = instance   # always update so get_settings() returns the same object
     return instance
 
 
