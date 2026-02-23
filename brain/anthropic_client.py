@@ -111,13 +111,15 @@ class AnthropicClient(BaseLLMClient):
         return result
 
     async def health_check(self) -> bool:
+        """
+        Verify that the API key is valid without generating any tokens.
+
+        Uses the models.list() endpoint instead of a messages.create() call so:
+          - No tokens are consumed.
+          - No hardcoded model string that could become deprecated.
+        """
         try:
-            # Minimal API call to verify auth
-            await self._client.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=1,
-                messages=[{"role": "user", "content": "hi"}],
-            )
+            await self._client.models.list()
             return True
         except anthropic.AuthenticationError:
             return False

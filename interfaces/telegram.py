@@ -91,13 +91,11 @@ class TelegramBot:
 
         # Init memory
         self._memory = MemoryManager(
-            chroma_persist_dir=self._settings.memory.get("chroma_persist_dir", "./data/chroma"),
-            sqlite_path=self._settings.memory.get("sqlite_path", "./data/sqlite/episodes.db"),
-            embedding_model=self._settings.memory.get(
-                "embedding_model", "BAAI/bge-small-en-v1.5"
-            ),
-            max_short_term_turns=self._settings.memory.get("max_short_term_turns", 20),
-            relevance_threshold=self._settings.memory.get("relevance_threshold", 0.85),
+            chroma_persist_dir=self._settings.memory.chroma_persist_dir,
+            sqlite_path=self._settings.memory.sqlite_path,
+            embedding_model=self._settings.memory.embedding_model,
+            max_short_term_turns=self._settings.memory.max_short_term_turns,
+            relevance_threshold=self._settings.memory.relevance_threshold,
         )
         await self._memory.init()
 
@@ -171,10 +169,8 @@ class TelegramBot:
         if chat_id not in self._sessions:
             self._sessions[chat_id] = Session.create(
                 user_id=str(chat_id),
-                trust_level=TrustLevel(
-                    self._settings.agent.get("default_trust_level", "low")
-                ),
-                max_turns=self._settings.memory.get("max_short_term_turns", 20),
+                trust_level=TrustLevel(self._settings.agent.default_trust_level),
+                max_turns=self._settings.memory.max_short_term_turns,
             )
             log.info("telegram.session_created", chat_id=chat_id)
         return self._sessions[chat_id]
@@ -186,26 +182,41 @@ class TelegramBot:
             llm_client = LLMClientFactory.from_settings(self._settings)
 
             allowed_paths = (
-                self._settings.tools.get("filesystem", {}).get("allowed_paths")
+                self._settings.tools.filesystem.allowed_paths
                 or ["./data/agent_files"]
             )
-            extra_cmds = (
-                self._settings.tools.get("terminal", {}).get("whitelist_extra") or []
-            )
+            extra_cmds = self._settings.tools.terminal.whitelist_extra or []
             safety = SafetyKernel(
                 allowed_paths=allowed_paths,
                 extra_allowed_commands=extra_cmds,
             )
 
+            # Bug 11 fix: the original closure captured `update` at orchestrator
+            # creation time.  If the user sent a second message while the first
+            # was still running, _stream_callback would reply to the *old*
+            # update object, sending responses to the wrong message context.
+            #
+            # Fix: store the latest update on the TelegramInterface instance
+            # (keyed by chat_id) and read it inside the callback so it always
+            # refers to the most-recently-active update for that chat.
+            self._latest_update: dict[int, Update] = getattr(
+                self, "_latest_update", {}
+            )
+            self._latest_update[chat_id] = update
+
             def _stream_callback(resp: AgentResponse) -> None:
-                asyncio.create_task(self._send_response(chat_id, resp, update))
+                # Read the current update at callback-invocation time, not at
+                # orchestrator-creation time, so concurrent messages are safe.
+                current_update = self._latest_update.get(chat_id)
+                if current_update is not None:
+                    asyncio.create_task(
+                        self._send_response(chat_id, resp, current_update)
+                    )
 
             bus = ToolBus(
                 registry=global_registry,
                 safety_kernel=safety,
-                timeout_seconds=self._settings.tools.get(
-                    "terminal", {}
-                ).get("default_timeout_seconds", 30),
+                timeout_seconds=self._settings.tools.terminal.default_timeout_seconds,
             )
 
             self._orchestrators[chat_id] = Orchestrator.from_settings(
@@ -216,6 +227,11 @@ class TelegramBot:
                 memory_manager=self._memory,
                 on_response=_stream_callback,
             )
+
+        # Always refresh the latest update for this chat so the stream callback
+        # uses the right reply context for subsequent messages.
+        if hasattr(self, "_latest_update"):
+            self._latest_update[chat_id] = update
 
         return self._orchestrators[chat_id]
 

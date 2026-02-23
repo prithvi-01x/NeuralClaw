@@ -154,6 +154,14 @@ class EpisodicMemory:
             await self._db.close()
             self._db = None
 
+    def _require_db(self) -> None:
+        """Raise clearly if the database connection is not open."""
+        if self._db is None:
+            raise RuntimeError(
+                "EpisodicMemory is not initialised (or has been closed). "
+                "Call `await episodic.init()` before use."
+            )
+
     # ── Episodes ──────────────────────────────────────────────────────────────
 
     async def start_episode(
@@ -163,6 +171,7 @@ class EpisodicMemory:
         metadata: Optional[dict] = None,
     ) -> str:
         """Create a new episode record and return its ID."""
+        self._require_db()
         episode_id = str(uuid.uuid4())
         await self._db.execute(
             """INSERT INTO episodes
@@ -184,6 +193,7 @@ class EpisodicMemory:
         turn_count: int = 0,
     ) -> None:
         """Update an episode with its outcome and summary."""
+        self._require_db()
         await self._db.execute(
             """UPDATE episodes SET
                outcome=?, summary=?, steps_json=?,
@@ -208,6 +218,7 @@ class EpisodicMemory:
         session_id: Optional[str] = None,
     ) -> list[Episode]:
         """Return the most recent episodes, optionally filtered by session."""
+        self._require_db()
         if session_id:
             cursor = await self._db.execute(
                 "SELECT * FROM episodes WHERE session_id=? ORDER BY started_at DESC LIMIT ?",
@@ -223,10 +234,13 @@ class EpisodicMemory:
 
     async def search_episodes(self, query: str, n: int = 5) -> list[Episode]:
         """Full-text search over episode goals and summaries."""
-        like = f"%{query}%"
+        self._require_db()
+        # Escape SQLite LIKE special characters so user input isn't treated as wildcards
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{escaped}%"
         cursor = await self._db.execute(
             """SELECT * FROM episodes
-               WHERE goal LIKE ? OR summary LIKE ?
+               WHERE goal LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\'
                ORDER BY started_at DESC LIMIT ?""",
             (like, like, n),
         )
@@ -247,6 +261,7 @@ class EpisodicMemory:
         episode_id: Optional[str] = None,
     ) -> str:
         """Log a single tool invocation. Returns the record ID."""
+        self._require_db()
         record_id = str(uuid.uuid4())
         await self._db.execute(
             """INSERT INTO tool_calls
@@ -271,6 +286,7 @@ class EpisodicMemory:
 
     async def get_tool_call_stats(self) -> list[dict[str, Any]]:
         """Return tool usage counts, sorted by most used."""
+        self._require_db()
         cursor = await self._db.execute(
             """SELECT tool_name,
                       COUNT(*) as total,
@@ -289,6 +305,7 @@ class EpisodicMemory:
         tool_name: Optional[str] = None,
         session_id: Optional[str] = None,
     ) -> list[ToolCallRecord]:
+        self._require_db()
         if tool_name and session_id:
             cursor = await self._db.execute(
                 "SELECT * FROM tool_calls WHERE tool_name=? AND session_id=? ORDER BY timestamp DESC LIMIT ?",
@@ -321,6 +338,7 @@ class EpisodicMemory:
         context: Optional[str] = None,
     ) -> str:
         """Store a reflection/lesson-learned."""
+        self._require_db()
         reflection_id = str(uuid.uuid4())
         await self._db.execute(
             "INSERT INTO reflections (id, session_id, content, context, timestamp) VALUES (?, ?, ?, ?, ?)",
@@ -330,6 +348,7 @@ class EpisodicMemory:
         return reflection_id
 
     async def get_recent_reflections(self, n: int = 10) -> list[Reflection]:
+        self._require_db()
         cursor = await self._db.execute(
             "SELECT * FROM reflections ORDER BY timestamp DESC LIMIT ?", (n,)
         )

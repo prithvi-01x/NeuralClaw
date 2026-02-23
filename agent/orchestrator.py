@@ -13,6 +13,15 @@ For each user turn the orchestrator:
 Autonomous mode (run_autonomous) additionally uses the Planner to decompose
 a goal into steps and drives the loop step-by-step.
 
+Fixes applied:
+  - LLMInvalidRequestError is now caught explicitly in _agent_loop and
+    surfaces a clear, user-readable error panel instead of a raw exception
+    traceback. This is hit when using Bytez (no tool support) with tools
+    registered — the agent now gracefully informs the user rather than
+    crashing.
+  - Autonomous step errors are now yielded as proper ERROR responses so the
+    user sees them in the UI, not just in the log.
+
 Usage:
     orc = Orchestrator(llm, config, bus, registry, memory)
     response = await orc.run_turn(session, "What files are in ~/projects?")
@@ -28,7 +37,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Callable, Optional
 
-from brain.llm_client import BaseLLMClient
+from brain.llm_client import BaseLLMClient, LLMInvalidRequestError
 from brain.types import (
     LLMConfig, LLMResponse, Message, Role,
     ToolCall as BrainToolCall,
@@ -204,6 +213,12 @@ class Orchestrator:
                     log.warning("orchestrator.step_failed", step=step.description[:80],
                                 error=str(step_err))
 
+                    # Yield the error so the user sees it in the UI
+                    yield self._synth.error(
+                        f"Step {step.index + 1} encountered an error",
+                        detail=str(step_err),
+                    )
+
                     recovery = await self._planner.create_recovery(
                         goal=goal,
                         failed_step=step.description,
@@ -222,11 +237,14 @@ class Orchestrator:
                                 description=f"[Recovery] {rdesc}",
                             )
                             plan.steps.insert(insert_at + i, new_step)
+                        # Renumber every step so indices match position
+                        for j, s in enumerate(plan.steps):
+                            s.index = j
                         if recovery.skip_failed_step:
                             plan.advance()
                         yield AgentResponse(
                             kind=ResponseKind.PROGRESS,
-                            text=f"⚠️ Step failed — attempting recovery: {recovery.recovery_steps[0]}",
+                            text=f"⚠️ Attempting recovery: {recovery.recovery_steps[0]}",
                             is_final=False,
                         )
                     else:
@@ -286,15 +304,26 @@ class Orchestrator:
         Iterates until the LLM produces a final text response (no tool calls),
         or until _max_iter is reached.
         """
-        # Build tool schemas for the LLM
-        llm_tools: list[BrainToolSchema] = [
-            BrainToolSchema(
-                name=s.name,
-                description=s.description,
-                parameters=s.parameters,
-            )
-            for s in self._registry.list_schemas(enabled_only=True)
-        ]
+        # Build tool schemas — only for providers that support tool calling.
+        # Providers like Bytez declare supports_tools = False; passing tools
+        # to them raises LLMInvalidRequestError before hitting the network,
+        # which previously broke every single turn including simple "hey".
+        _provider_supports_tools = getattr(self._llm, "supports_tools", True)
+        llm_tools: list[BrainToolSchema] = (
+            [
+                BrainToolSchema(
+                    name=s.name,
+                    description=s.description,
+                    parameters=s.parameters,
+                )
+                for s in self._registry.list_schemas(enabled_only=True)
+            ]
+            if _provider_supports_tools
+            else []
+        )
+        if not _provider_supports_tools:
+            log.debug("orchestrator.tools_suppressed",
+                      reason="provider does not support tool calling")
 
         # Build full message context
         messages = await self._ctx.build(session=session, user_message=user_message)
@@ -307,11 +336,20 @@ class Orchestrator:
                       msg_count=len(messages))
 
             # ── LLM call ──────────────────────────────────────────────────────
-            llm_resp: LLMResponse = await self._llm.generate(
-                messages=messages,
-                config=self._config,
-                tools=llm_tools or None,
-            )
+            try:
+                llm_resp: LLMResponse = await self._llm.generate(
+                    messages=messages,
+                    config=self._config,
+                    tools=llm_tools or None,
+                )
+            except LLMInvalidRequestError as e:
+                # Defensive: provider raised despite our supports_tools check.
+                log.warning("orchestrator.llm_invalid_request", error=str(e))
+                return self._synth.error(
+                    "Provider limitation",
+                    detail=str(e),
+                )
+
             session.record_token_usage(
                 llm_resp.usage.input_tokens,
                 llm_resp.usage.output_tokens,
@@ -369,33 +407,45 @@ class Orchestrator:
         """
         Execute a list of tool calls.
         LOW/MEDIUM risk → parallel. HIGH/CRITICAL → sequential.
-        """
-        low: list[BrainToolCall] = []
-        high: list[BrainToolCall] = []
 
-        for btc in brain_tool_calls:
+        Bug 7 fix: results were returned as low_results + high_results, which
+        reorders them relative to brain_tool_calls.  The caller zips results
+        with llm_resp.tool_calls positionally, so a mixed list (e.g. [low,
+        high, low]) caused tool_call_id ↔ result mismatches and fed wrong
+        results back to the LLM.  We now collect results into a pre-sized list
+        indexed by original position so order is always preserved.
+        """
+        low: list[tuple[int, BrainToolCall]] = []
+        high: list[tuple[int, BrainToolCall]] = []
+
+        for idx, btc in enumerate(brain_tool_calls):
             schema = self._registry.get_schema(btc.name)
             risk = schema.risk_level if schema else RiskLevel.MEDIUM
-            (high if risk >= RiskLevel.HIGH else low).append(btc)
+            (high if risk >= RiskLevel.HIGH else low).append((idx, btc))
 
-        results: list[ToolResult] = []
+        # Pre-allocate results list so we can insert by original index
+        results: list[ToolResult | None] = [None] * len(brain_tool_calls)
 
         if low:
-            tasks = [self._dispatch_one(btc, session) for btc in low]
+            tasks = [self._dispatch_one(btc, session) for _, btc in low]
             parallel = await asyncio.gather(*tasks, return_exceptions=True)
-            for btc, r in zip(low, parallel):
+            for (idx, btc), r in zip(low, parallel):
                 if isinstance(r, Exception):
-                    results.append(ToolResult.error(btc.id, btc.name, str(r)))
+                    results[idx] = ToolResult.error(btc.id, btc.name, str(r))
                 else:
-                    results.append(r)
+                    results[idx] = r
 
-        for btc in high:
+        for idx, btc in high:
             if session.is_cancelled():
-                results.append(ToolResult.error(btc.id, btc.name, "Cancelled."))
+                results[idx] = ToolResult.error(btc.id, btc.name, "Cancelled.")
                 continue
-            results.append(await self._dispatch_one(btc, session))
+            results[idx] = await self._dispatch_one(btc, session)
 
-        return results
+        # All slots must be filled
+        unfilled = [i for i, r in enumerate(results) if r is None]
+        if unfilled:
+            raise RuntimeError(f"BUG: unfilled tool result slots at indices {unfilled}")
+        return results  # type: ignore[return-value]
 
     async def _dispatch_one(self, btc: BrainToolCall, session: Session) -> ToolResult:
         """
@@ -437,18 +487,17 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 log.warning("orchestrator.confirm_timeout",
                             tool_call_id=decision.tool_call_id)
+                session._pending_confirmations.pop(decision.tool_call_id, None)
                 return False
 
         # Convert brain ToolCall → tools ToolCall for the bus
         tool_call = ToolCall(id=btc.id, name=btc.name, arguments=btc.arguments)
 
-        # Temporarily set the confirmation handler on the bus
-        old_confirm = self._bus.on_confirm_needed
-        self._bus.on_confirm_needed = _on_confirm
-        try:
-            result = await self._bus.dispatch(tool_call, trust_level=session.trust_level)
-        finally:
-            self._bus.on_confirm_needed = old_confirm
+        result = await self._bus.dispatch(
+            tool_call,
+            trust_level=session.trust_level,
+            on_confirm_needed=_on_confirm,
+        )
 
         session.record_tool_call()
 
@@ -465,6 +514,50 @@ class Orchestrator:
         ))
 
         return result
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Compaction
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def compact_session(self, session: Session, keep_recent: int = 4) -> str:
+        """
+        Summarise and compact the session's short-term conversation buffer.
+
+        Calls the LLM to produce a ~5-sentence summary of everything in the
+        buffer, then replaces all but the `keep_recent` most-recent user turns
+        with that summary.  The summary is injected into subsequent contexts so
+        the agent retains awareness of earlier topics.
+
+        Also persists the summary to long-term memory so it survives restarts.
+
+        Returns the summary text for display.
+        Raises RuntimeError if there is nothing to compact.
+        """
+        summary = await session.memory.compact(
+            llm_client=self._llm,
+            llm_config=self._config,
+            keep_recent=keep_recent,
+        )
+
+        # Persist to long-term memory (fire-and-forget)
+        asyncio.create_task(self._memory.store(
+            f"[Compact summary] {summary}",
+            collection="conversations",
+            metadata={
+                "session_id": session.id,
+                "user_id":    session.user_id,
+                "type":       "compact_summary",
+                "turn":       session.turn_count,
+            },
+        ))
+
+        log.info(
+            "orchestrator.session_compacted",
+            session_id=session.id,
+            turn=session.turn_count,
+            keep_recent=keep_recent,
+        )
+        return summary
 
     # ─────────────────────────────────────────────────────────────────────────
     # Memory persistence
@@ -502,8 +595,8 @@ class Orchestrator:
         """Create an Orchestrator from the NeuralClaw Settings object."""
         llm_config = LLMConfig(
             model=settings.default_llm_model,
-            temperature=settings.llm.get("temperature", 0.7),
-            max_tokens=settings.llm.get("max_tokens", 4096),
+            temperature=settings.llm.temperature,
+            max_tokens=settings.llm.max_tokens,
         )
         return cls(
             llm_client=llm_client,
@@ -511,7 +604,7 @@ class Orchestrator:
             tool_bus=tool_bus,
             tool_registry=tool_registry,
             memory_manager=memory_manager,
-            agent_name=settings.agent.get("name", "NeuralClaw"),
-            max_iterations=settings.agent.get("max_iterations_per_turn", _MAX_ITER),
+            agent_name=settings.agent.name,
+            max_iterations=settings.agent.max_iterations_per_turn,
             on_response=on_response,
         )

@@ -2,18 +2,18 @@
 observability/logger.py — NeuralClaw Structured Logger
 
 Sets up structlog with:
-  - JSON output to rotating log files
-  - Human-readable output to console (dev mode) or JSON (prod mode)
+  - JSON output to rotating log files only (stdout stays clean for the chat UI)
+  - Optional human-readable console output (dev mode) or JSON (prod/pipe mode)
   - Consistent fields on every log line: timestamp, level, event, session_id
+  - Third-party noisy loggers fully muted via NullHandler so they never
+    reach stdout regardless of log level (chromadb telemetry, sentence_transformers,
+    posthog, huggingface_hub, torch).
 
 Usage:
     from observability.logger import get_logger, setup_logging
-    from config.settings import get_settings
-
-    setup_logging(get_settings())          # call once at startup
+    setup_logging(level="INFO", log_dir="./data/logs", console_output=False)
     log = get_logger(__name__)
     log.info("tool.call.start", tool="browser_navigate", url="https://example.com")
-    log.warning("safety.blocked", tool="terminal_exec", reason="rm pattern matched")
 """
 
 from __future__ import annotations
@@ -27,6 +27,47 @@ from typing import Any, Optional
 import structlog
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Third-party loggers that produce noise on stdout at INFO level.
+# These are silenced globally to WARNING so they only appear in the log file
+# and only when something actually goes wrong.
+# ─────────────────────────────────────────────────────────────────────────────
+# Third-party loggers that must never reach stdout.
+# We attach a NullHandler AND set the level to CRITICAL so that even
+# ERROR-level messages (like chromadb posthog telemetry failures) are
+# completely swallowed — they still go to the log file via the root handler
+# if the file handler is configured, but never pollute the terminal.
+_MUTED_LOGGERS = [
+    "sentence_transformers",
+    "sentence_transformers.SentenceTransformer",
+    "chromadb",
+    "chromadb.telemetry",
+    "chromadb.telemetry.product.posthog",
+    "huggingface_hub",
+    "transformers",
+    "torch",
+]
+
+
+def _mute_noisy_loggers() -> None:
+    """
+    Fully suppress all known chatty third-party loggers.
+
+    Sets propagate=False so their records never reach the root logger
+    (and therefore never reach any stdout handler), then attaches a
+    NullHandler so Python does not emit the 'No handlers could be found'
+    warning. Level is set to CRITICAL as an extra belt-and-braces guard.
+    """
+    null = logging.NullHandler()
+    for name in _MUTED_LOGGERS:
+        lgr = logging.getLogger(name)
+        lgr.setLevel(logging.CRITICAL)
+        lgr.propagate = False
+        # Avoid adding duplicate NullHandlers on repeated setup_logging calls
+        if not any(isinstance(h, logging.NullHandler) for h in lgr.handlers):
+            lgr.addHandler(null)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -34,7 +75,7 @@ import structlog
 def setup_logging(
     level: str = "INFO",
     log_dir: str | Path = "./data/logs",
-    json_format: bool = True,
+    json_format: Optional[bool] = None,  # None = auto-detect from tty
     console_output: bool = True,
     max_bytes: int = 100 * 1024 * 1024,   # 100 MB
     backup_count: int = 5,
@@ -45,8 +86,10 @@ def setup_logging(
     Args:
         level:          Log level string — DEBUG | INFO | WARNING | ERROR | CRITICAL
         log_dir:        Directory for rotating log files.
-        json_format:    If True, console also emits JSON (production mode).
+        json_format:    If True, console emits JSON (production/pipe mode).
                         If False, console uses coloured human-readable format (dev mode).
+                        If None (default), auto-detects: pretty when stdout is a TTY,
+                        JSON when stdout is a pipe/file (e.g. systemd, Docker).
         console_output: Whether to emit logs to stdout at all.
         max_bytes:      Max size of each log file before rotation.
         backup_count:   Number of rotated log files to keep.
@@ -55,6 +98,10 @@ def setup_logging(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     numeric_level = getattr(logging, level.upper(), logging.INFO)
+
+    # Auto-detect JSON vs pretty based on whether stdout is a real terminal
+    if json_format is None:
+        json_format = not sys.stdout.isatty()
 
     # ── Shared structlog processors ───────────────────────────────────────────
     shared_processors: list[Any] = [
@@ -92,6 +139,12 @@ def setup_logging(
         force=True,
     )
 
+    # ── Mute noisy third-party loggers AFTER basicConfig ───────────────────────
+    # propagate=False + NullHandler means their records never reach the root
+    # logger and therefore never reach any stdout handler, regardless of level.
+    # Must be called after basicConfig so the root logger is already set up.
+    _mute_noisy_loggers()
+
     # ── Configure structlog ───────────────────────────────────────────────────
     if json_format:
         renderer = structlog.processors.JSONRenderer()
@@ -117,8 +170,20 @@ def setup_logging(
         foreign_pre_chain=shared_processors,
     )
 
-    for handler in handlers:
-        handler.setFormatter(formatter)
+    # File always uses JSON regardless of console format
+    file_formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.JSONRenderer(),
+        ],
+        foreign_pre_chain=shared_processors,
+    )
+
+    for i, handler in enumerate(handlers):
+        if isinstance(handler, logging.handlers.RotatingFileHandler):
+            handler.setFormatter(file_formatter)
+        else:
+            handler.setFormatter(formatter)
 
 
 def get_logger(name: str = "neuralclaw", **initial_values: Any) -> structlog.stdlib.BoundLogger:

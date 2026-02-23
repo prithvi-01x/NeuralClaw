@@ -92,8 +92,11 @@ class MemoryManager:
         log.info("memory_manager.ready")
 
     async def close(self) -> None:
-        """Flush and close all database connections."""
+        """Flush and close all database connections and thread-pool executors."""
         await self.episodic.close()
+        await self.long_term.close()
+        self.embedder.close()
+        self._initialized = False   # allow re-init after close; guards against use-after-close
         log.info("memory_manager.closed")
 
     # ── Session management ────────────────────────────────────────────────────
@@ -291,11 +294,11 @@ class MemoryManager:
     def from_settings(cls, settings) -> "MemoryManager":
         """Create a MemoryManager from the NeuralClaw Settings object."""
         return cls(
-            chroma_persist_dir=settings.memory.get("chroma_persist_dir", "./data/chroma"),
-            sqlite_path=settings.memory.get("sqlite_path", "./data/sqlite/episodes.db"),
-            embedding_model=settings.memory.get("embedding_model", "BAAI/bge-small-en-v1.5"),
-            max_short_term_turns=settings.memory.get("max_short_term_turns", 20),
-            relevance_threshold=settings.memory.get("relevance_threshold", 0.85),
+            chroma_persist_dir=settings.memory.chroma_persist_dir,
+            sqlite_path=settings.memory.sqlite_path,
+            embedding_model=settings.memory.embedding_model,
+            max_short_term_turns=settings.memory.max_short_term_turns,
+            relevance_threshold=settings.memory.relevance_threshold,
         )
 
     # ── Internal ─────────────────────────────────────────────────────────────

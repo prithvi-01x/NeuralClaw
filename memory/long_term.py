@@ -1,74 +1,73 @@
 """
-memory/long_term.py — Long-Term Vector Memory
+memory/long_term.py — Long-Term Memory (ChromaDB)
 
-Persistent semantic memory backed by ChromaDB.
-Stores text with embeddings for fuzzy/semantic search across sessions.
+Persists agent knowledge, facts, and conversation summaries across sessions
+using ChromaDB as a local vector store.
 
-Collections:
-  - conversations : summaries of past dialogue sessions
-  - knowledge     : facts, snippets, learned context
-  - tool_results  : significant tool outputs worth remembering
-  - plans         : completed or failed task plans
-
-Usage:
-    lt = LongTermMemory(persist_dir="./data/chroma", embedder=embedder)
-    await lt.store("Python is great for async I/O", collection="knowledge")
-    results = await lt.search("async programming", collection="knowledge", n=3)
+Fix applied:
+  - Telemetry disabled via chromadb.Settings(anonymized_telemetry=False)
+    to eliminate the "capture() takes 1 positional argument but 3 were given"
+    error spam caused by a posthog version mismatch in the chromadb package.
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from memory.embedder import Embedder
 from observability.logger import get_logger
 
 log = get_logger(__name__)
 
-# Valid collection names
-COLLECTIONS = frozenset(["conversations", "knowledge", "tool_results", "plans"])
 DEFAULT_COLLECTION = "knowledge"
-_MAX_RESULTS = 20
+
+COLLECTIONS = [
+    "knowledge",       # general facts and research
+    "conversations",   # summarised past interactions
+    "reflections",     # agent self-reflections and lessons
+    "user_prefs",      # user preferences and context
+]
 
 
 @dataclass
 class MemoryEntry:
-    """A single entry retrieved from long-term memory."""
     id: str
     text: str
     collection: str
-    distance: float          # 0.0 = identical, 2.0 = completely different
-    metadata: dict[str, Any] = field(default_factory=dict)
-    timestamp: float = field(default_factory=time.time)
-
-    @property
-    def relevance_score(self) -> float:
-        """Convert distance to a 0-1 relevance score (1 = most relevant)."""
-        return max(0.0, 1.0 - (self.distance / 2.0))
+    metadata: dict = field(default_factory=dict)
+    relevance_score: float = 0.0
 
 
 class LongTermMemory:
     """
-    ChromaDB-backed vector store for semantic memory.
+    Async wrapper around ChromaDB for persistent vector memory.
 
-    Uses local embeddings (sentence-transformers) — no external API calls.
-    All ChromaDB operations are synchronous; we wrap them in thread pool
-    so they don't block the async event loop.
+    Collections:
+        knowledge     — general facts learned during tasks
+        conversations — summaries of past sessions
+        reflections   — lessons from completed autonomous tasks
+        user_prefs    — stable user preferences / context
+
+    Usage:
+        lt = LongTermMemory(persist_dir="./data/chroma", embedder=embedder)
+        await lt.init()
+        doc_id = await lt.store("Python asyncio overview", collection="knowledge")
+        results = await lt.search("async programming", n=5)
     """
 
     def __init__(
         self,
         persist_dir: str = "./data/chroma",
-        embedder=None,
-        relevance_threshold: float = 0.85,
+        embedder: Optional[Embedder] = None,
+        relevance_threshold: float = 0.5,
     ):
         self.persist_dir = persist_dir
-        self.embedder = embedder
-        self.relevance_threshold = relevance_threshold
+        self._embedder = embedder or Embedder()
+        self._relevance_threshold = relevance_threshold
         self._client = None
         self._collections: dict[str, Any] = {}
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chromadb")
@@ -79,7 +78,7 @@ class LongTermMemory:
         async with self._lock:
             if self._client is not None:
                 return
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(self._executor, self._setup_chroma)
             log.info("long_term_memory.initialized", persist_dir=self.persist_dir)
 
@@ -87,53 +86,29 @@ class LongTermMemory:
         self,
         text: str,
         collection: str = DEFAULT_COLLECTION,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict] = None,
         doc_id: Optional[str] = None,
     ) -> str:
         """
-        Embed and store a text entry in the specified collection.
-
-        Args:
-            text:       Text content to store.
-            collection: One of: conversations, knowledge, tool_results, plans.
-            metadata:   Optional key-value metadata (filterable).
-            doc_id:     Optional ID — auto-generated if not provided.
+        Store a text document with its embedding in the specified collection.
 
         Returns:
-            The document ID of the stored entry.
+            The document ID.
         """
         await self._ensure_init()
-        collection = self._validate_collection(collection)
-        doc_id = doc_id or str(uuid.uuid4())
+        doc_id = doc_id or f"doc_{uuid.uuid4().hex}"
+        embedding = await self._embedder.embed(text)
+        meta = metadata or {}
 
-        meta = {
-            "timestamp": time.time(),
-            "collection": collection,
-            **(metadata or {}),
-        }
-
-        # Embed in async context
-        if self.embedder:
-            embedding = await self.embedder.embed(text)
-        else:
-            embedding = None
-
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             self._executor,
             self._chroma_add,
             collection,
             doc_id,
             text,
-            meta,
             embedding,
-        )
-
-        log.debug(
-            "long_term_memory.stored",
-            collection=collection,
-            doc_id=doc_id,
-            text_length=len(text),
+            meta,
         )
         return doc_id
 
@@ -142,86 +117,106 @@ class LongTermMemory:
         query: str,
         collection: str = DEFAULT_COLLECTION,
         n: int = 5,
-        where: Optional[dict] = None,
     ) -> list[MemoryEntry]:
         """
-        Semantic search over a collection.
-
-        Args:
-            query:      Natural language query.
-            collection: Collection to search.
-            n:          Max results to return.
-            where:      Optional ChromaDB metadata filter.
+        Semantic search within a single collection.
 
         Returns:
-            List of MemoryEntry sorted by relevance (most relevant first).
+            List of MemoryEntry objects sorted by relevance (highest first).
+            Entries below relevance_threshold are filtered out.
         """
         await self._ensure_init()
-        collection = self._validate_collection(collection)
-        n = min(n, _MAX_RESULTS)
+        query_embedding = await self._embedder.embed(query)
 
-        if self.embedder:
-            query_embedding = await self.embedder.embed(query)
-        else:
-            query_embedding = None
-
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         raw = await loop.run_in_executor(
             self._executor,
             self._chroma_query,
             collection,
-            query,
             query_embedding,
             n,
-            where,
         )
 
-        return self._parse_results(raw, collection)
+        entries = []
+        if raw and raw.get("ids"):
+            for i, doc_id in enumerate(raw["ids"][0]):
+                distance = raw["distances"][0][i] if raw.get("distances") else 1.0
+                # ChromaDB cosine distance: 0 = identical, 2 = opposite
+                # Convert to similarity score in [0, 1]
+                score = max(0.0, 1.0 - (distance / 2.0))
+                if score < self._relevance_threshold:
+                    continue
+                entries.append(MemoryEntry(
+                    id=doc_id,
+                    text=raw["documents"][0][i] if raw.get("documents") else "",
+                    collection=collection,
+                    metadata=raw["metadatas"][0][i] if raw.get("metadatas") else {},
+                    relevance_score=score,
+                ))
+        return sorted(entries, key=lambda e: e.relevance_score, reverse=True)
 
-    async def delete(self, doc_id: str, collection: str = DEFAULT_COLLECTION) -> bool:
-        """Delete a document from a collection by ID."""
-        await self._ensure_init()
-        collection = self._validate_collection(collection)
-        loop = asyncio.get_event_loop()
-        try:
-            await loop.run_in_executor(
-                self._executor,
-                self._chroma_delete,
-                collection,
-                doc_id,
-            )
-            return True
-        except Exception as e:
-            log.warning("long_term_memory.delete_failed", doc_id=doc_id, error=str(e))
-            return False
+    async def search_all(
+        self,
+        query: str,
+        n_per_collection: int = 3,
+    ) -> dict[str, list[MemoryEntry]]:
+        """Search across all collections and return results grouped by collection."""
+        tasks = {
+            col: self.search(query, collection=col, n=n_per_collection)
+            for col in COLLECTIONS
+        }
+        results = {}
+        for col, coro in tasks.items():
+            entries = await coro
+            if entries:
+                results[col] = entries
+        return results
 
-    async def count(self, collection: str = DEFAULT_COLLECTION) -> int:
-        """Return the number of documents in a collection."""
+    async def delete(self, doc_id: str, collection: str = DEFAULT_COLLECTION) -> None:
+        """Delete a document by ID."""
         await self._ensure_init()
-        collection = self._validate_collection(collection)
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
             self._executor,
-            lambda: self._collections[collection].count(),
+            self._chroma_delete,
+            collection,
+            doc_id,
         )
 
     async def clear_collection(self, collection: str) -> None:
         """Delete all documents in a collection."""
         await self._ensure_init()
-        collection = self._validate_collection(collection)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             self._executor,
             self._chroma_clear,
             collection,
         )
-        log.info("long_term_memory.collection_cleared", collection=collection)
 
-    # ── Private: ChromaDB operations (run in thread pool) ─────────────────────
+    async def count(self, collection: str = DEFAULT_COLLECTION) -> int:
+        """Return the number of documents in a collection."""
+        await self._ensure_init()
+        if collection not in self._collections:
+            return 0
+        return self._collections[collection].count()
+
+    async def close(self) -> None:
+        """Shut down the thread-pool executor cleanly."""
+        self._executor.shutdown(wait=True)
+        log.debug("long_term_memory.closed")
+
+    # ── Private / sync helpers (run in thread-pool) ───────────────────────────
 
     def _setup_chroma(self) -> None:
         import chromadb
-        self._client = chromadb.PersistentClient(path=self.persist_dir)
+        from chromadb.config import Settings
+
+        # Disable telemetry to prevent "capture() takes 1 positional argument
+        # but 3 were given" error spam caused by a posthog version mismatch.
+        self._client = chromadb.PersistentClient(
+            path=self.persist_dir,
+            settings=Settings(anonymized_telemetry=False),
+        )
         for name in COLLECTIONS:
             self._collections[name] = self._client.get_or_create_collection(
                 name=name,
@@ -233,74 +228,47 @@ class LongTermMemory:
         collection: str,
         doc_id: str,
         text: str,
+        embedding: list[float],
         metadata: dict,
-        embedding: Optional[list[float]],
     ) -> None:
-        col = self._collections[collection]
-        kwargs: dict[str, Any] = {
-            "ids": [doc_id],
-            "documents": [text],
-            "metadatas": [metadata],
-        }
-        if embedding:
-            kwargs["embeddings"] = [embedding]
-        col.add(**kwargs)
+        col = self._collections.get(collection)
+        if col is None:
+            raise ValueError(f"Unknown collection: {collection!r}")
+        col.upsert(
+            ids=[doc_id],
+            documents=[text],
+            embeddings=[embedding],
+            metadatas=[metadata],
+        )
 
     def _chroma_query(
         self,
         collection: str,
-        query_text: str,
-        query_embedding: Optional[list[float]],
+        embedding: list[float],
         n: int,
-        where: Optional[dict],
     ) -> dict:
-        col = self._collections[collection]
-        kwargs: dict[str, Any] = {"n_results": min(n, max(col.count(), 1))}
-        if query_embedding:
-            kwargs["query_embeddings"] = [query_embedding]
-        else:
-            kwargs["query_texts"] = [query_text]
-        if where:
-            kwargs["where"] = where
-        return col.query(**kwargs)
+        col = self._collections.get(collection)
+        if col is None:
+            return {}
+        count = col.count()
+        if count == 0:
+            return {}
+        return col.query(
+            query_embeddings=[embedding],
+            n_results=min(n, count),
+            include=["documents", "metadatas", "distances"],
+        )
 
     def _chroma_delete(self, collection: str, doc_id: str) -> None:
-        self._collections[collection].delete(ids=[doc_id])
+        col = self._collections.get(collection)
+        if col:
+            col.delete(ids=[doc_id])
 
     def _chroma_clear(self, collection: str) -> None:
-        col = self._collections[collection]
-        all_ids = col.get()["ids"]
-        if all_ids:
-            col.delete(ids=all_ids)
-
-    def _parse_results(self, raw: dict, collection: str) -> list[MemoryEntry]:
-        entries = []
-        if not raw or not raw.get("ids") or not raw["ids"][0]:
-            return entries
-
-        ids = raw["ids"][0]
-        docs = raw.get("documents", [[]])[0]
-        distances = raw.get("distances", [[]])[0]
-        metadatas = raw.get("metadatas", [[]])[0]
-
-        for i, doc_id in enumerate(ids):
-            entries.append(MemoryEntry(
-                id=doc_id,
-                text=docs[i] if i < len(docs) else "",
-                collection=collection,
-                distance=distances[i] if i < len(distances) else 1.0,
-                metadata=metadatas[i] if i < len(metadatas) else {},
-            ))
-
-        return entries
+        col = self._collections.get(collection)
+        if col:
+            col.delete(where={"_id": {"$ne": ""}})
 
     async def _ensure_init(self) -> None:
         if self._client is None:
             await self.init()
-
-    def _validate_collection(self, collection: str) -> str:
-        if collection not in COLLECTIONS:
-            raise ValueError(
-                f"Unknown collection: '{collection}'. Valid: {sorted(COLLECTIONS)}"
-            )
-        return collection

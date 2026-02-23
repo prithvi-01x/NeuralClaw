@@ -76,13 +76,17 @@ class ToolBus:
         self,
         tool_call: ToolCall,
         trust_level: TrustLevel = TrustLevel.LOW,
+        on_confirm_needed: Optional[Callable] = None,
     ) -> ToolResult:
         """
         Dispatch a tool call through the full pipeline.
 
         Args:
-            tool_call:   The tool call from the LLM.
-            trust_level: Current session trust level.
+            tool_call:        The tool call from the LLM.
+            trust_level:      Current session trust level.
+            on_confirm_needed: Per-call confirmation callback override.
+                               If provided, takes priority over self.on_confirm_needed.
+                               Signature: async (SafetyDecision) -> bool
 
         Returns:
             ToolResult (always — never raises, errors are captured in result).
@@ -141,7 +145,7 @@ class ToolBus:
             )
 
         if decision.needs_confirmation:
-            approved = await self._handle_confirmation(decision)
+            approved = await self._handle_confirmation(decision, on_confirm_needed)
             if not approved:
                 return ToolResult.error(
                     tool_call.id,
@@ -208,12 +212,16 @@ class ToolBus:
             duration_ms=duration_ms,
         )
 
-    async def _handle_confirmation(self, decision) -> bool:
+    async def _handle_confirmation(self, decision, per_call_callback: Optional[Callable] = None) -> bool:
         """
         Request user confirmation for a high-risk action.
         Returns True if approved, False if denied.
+
+        Uses per_call_callback if provided (avoids mutating shared state during
+        parallel tool dispatch), falling back to self.on_confirm_needed.
         """
-        if self.on_confirm_needed is None:
+        callback = per_call_callback or self.on_confirm_needed
+        if callback is None:
             log.warning(
                 "tool_bus.confirm_needed_no_handler",
                 tool=decision.tool_name,
@@ -222,7 +230,7 @@ class ToolBus:
             return False
 
         try:
-            return await self.on_confirm_needed(decision)
+            return await callback(decision)
         except Exception as e:
             log.error("tool_bus.confirm_handler_error", error=str(e))
             return False
@@ -237,17 +245,48 @@ def _validate_args(arguments: dict, schema: dict) -> Optional[str]:
     """
     Validate tool arguments against the JSON schema.
     Returns an error string if invalid, None if valid.
+
+    Checks:
+      1. All required fields are present.
+      2. Provided values match the declared JSON Schema types.
+         This catches bad LLM-generated arguments (e.g. string where int
+         expected) before the tool handler is invoked, giving the LLM a
+         clear error it can act on rather than an obscure TypeError mid-tool.
     """
     required = schema.get("required", [])
     properties = schema.get("properties", {})
 
-    # Check required fields
+    # 1. Required-field presence check
     for field in required:
         if field not in arguments:
             return f"Missing required field: '{field}'"
 
-    # Check no unknown fields (lenient — just warn, don't block)
-    # Could add type checking here in future
+    # 2. Type check every provided argument against its schema declaration
+    _JSON_TYPE_MAP: dict[str, type | tuple] = {
+        "string":  str,
+        "integer": int,
+        "number":  (int, float),
+        "boolean": bool,
+        "array":   list,
+        "object":  dict,
+    }
+    for field, value in arguments.items():
+        prop_schema = properties.get(field)
+        if prop_schema is None:
+            continue  # unknown field — lenient, don't block
+        json_type = prop_schema.get("type")
+        if json_type is None:
+            continue  # no type declared
+        expected = _JSON_TYPE_MAP.get(json_type)
+        if expected is None:
+            continue  # unrecognised type string
+        # bool is a subclass of int in Python, so check bool explicitly first
+        if json_type == "integer" and isinstance(value, bool):
+            return f"Field '{field}': expected integer, got boolean"
+        if not isinstance(value, expected):
+            actual = type(value).__name__
+            return f"Field '{field}': expected {json_type}, got {actual}"
+
     return None
 
 

@@ -22,6 +22,9 @@ from typing import Optional
 from tools.tool_registry import registry
 from tools.types import RiskLevel
 
+# Hard cap: refuse to load files larger than this into the LLM context
+_MAX_READ_BYTES = 10 * 1024 * 1024  # 10 MB
+
 
 @registry.register(
     name="file_read",
@@ -54,6 +57,13 @@ async def file_read(path: str, encoding: str = "utf-8") -> str:
         raise FileNotFoundError(f"File not found: {resolved}")
     if not resolved.is_file():
         raise ValueError(f"Path is not a file: {resolved}")
+    size = resolved.stat().st_size
+    if size > _MAX_READ_BYTES:
+        return (
+            f"[File too large to read directly: {size:,} bytes "
+            f"(limit {_MAX_READ_BYTES:,} bytes). "
+            f"Use terminal_exec with 'head', 'tail', or 'grep' to inspect it.]"
+        )
     return resolved.read_text(encoding=encoding)
 
 

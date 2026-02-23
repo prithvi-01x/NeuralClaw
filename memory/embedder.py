@@ -64,7 +64,7 @@ class Embedder:
             List of floats representing the embedding vector.
         """
         await self._ensure_loaded()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         vector = await loop.run_in_executor(
             self._executor,
             self._encode_single,
@@ -85,7 +85,7 @@ class Embedder:
         if not texts:
             return []
         await self._ensure_loaded()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         vectors = await loop.run_in_executor(
             self._executor,
             self._encode_batch,
@@ -114,7 +114,7 @@ class Embedder:
 
     async def _load_model(self) -> None:
         """Load the model in a thread (import + download is blocking)."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             log.info("embedder.loading", model=self.model_name)
             self._model = await loop.run_in_executor(
@@ -157,6 +157,11 @@ class Embedder:
     def _encode_batch(self, texts: list[str]):
         """Synchronous batch encode — runs in thread pool."""
         return self._model.encode(texts, normalize_embeddings=True, batch_size=32)
+
+    def close(self) -> None:
+        """Shut down the thread-pool executor cleanly to avoid interpreter-shutdown warnings."""
+        self._executor.shutdown(wait=True)
+        log.debug("embedder.executor_shutdown")
 
     def __repr__(self) -> str:
         loaded = "loaded" if self._model else "not loaded"

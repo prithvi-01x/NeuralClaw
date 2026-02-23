@@ -11,6 +11,19 @@ Features:
   - /ask, /run (autonomous), /status, /memory, /tools, /trust, /cancel, /clear, /help
   - Graceful Ctrl+C / Ctrl+D handling
 
+Fixes applied:
+  - _cmd_status now reuses self._orchestrator._synth instead of creating a
+    stray ResponseSynthesizer() instance.
+  - _cmd_cancel now checks whether anything is actually running and prints a
+    friendly "nothing to cancel" message if not.
+  - _build_prompt shows the turn count AFTER the completed turn (consistent
+    with what the user expects — turn N is shown after turn N finishes, not
+    during turn N+1). turn_count is incremented in add_user_message so the
+    prompt already reflects the upcoming turn number correctly; the fix just
+    makes the display logic explicit.
+  - Empty/whitespace response.text is guarded in _render_response so a blank
+    Panel is never shown (e.g. when bytez returns an empty string).
+
 Usage:
     python main.py --interface cli
     python main.py --interface cli --log-level DEBUG
@@ -47,6 +60,7 @@ from tools.types import TrustLevel
 import tools.filesystem  # noqa: F401
 import tools.terminal    # noqa: F401
 import tools.search      # noqa: F401
+import tools.web_fetch   # noqa: F401
 
 log = get_logger(__name__)
 
@@ -71,7 +85,9 @@ _HELP_TEXT = """
 | `/status` | Show current session status and stats |
 | `/memory <query>` | Search long-term memory |
 | `/tools` | List all registered tools |
-| `/trust <low\|medium\|high>` | Set session trust level |
+| `/trust <low\\|medium\\|high>` | Set session trust level |
+| `/compact` | Summarise old turns and compress context window |
+| `/usage` | Show token usage and estimated cost for this session |
 | `/clear` | Clear conversation history |
 | `/cancel` | Cancel the current running task |
 | `/help` | Show this help message |
@@ -121,7 +137,10 @@ class CLIInterface:
         """Initialize all components then run the REPL loop."""
         await self._init_components()
         self._print_banner()
-        await self._repl_loop()
+        try:
+            await self._repl_loop()
+        finally:
+            await self._cleanup()
 
     async def _init_components(self) -> None:
         """Wire up the full agent stack."""
@@ -144,12 +163,8 @@ class CLIInterface:
             await self._memory.init(load_embedder=False)
 
         # Safety kernel
-        allowed_paths = self.settings.tools.get("filesystem", {}).get(
-            "allowed_paths", ["~/agent_files"]
-        )
-        extra_commands = self.settings.tools.get("terminal", {}).get(
-            "whitelist_extra", []
-        )
+        allowed_paths = self.settings.tools.filesystem.allowed_paths
+        extra_commands = self.settings.tools.terminal.whitelist_extra
         safety_kernel = SafetyKernel(
             allowed_paths=allowed_paths,
             extra_allowed_commands=extra_commands,
@@ -159,18 +174,16 @@ class CLIInterface:
         tool_bus = ToolBus(
             registry=global_registry,
             safety_kernel=safety_kernel,
-            timeout_seconds=self.settings.tools.get("terminal", {}).get(
-                "default_timeout_seconds", 30
-            ),
+            timeout_seconds=self.settings.tools.terminal.default_timeout_seconds,
         )
 
         # Session
-        default_trust = self.settings.agent.get("default_trust_level", "low")
+        default_trust = self.settings.agent.default_trust_level
         trust_level = TrustLevel(default_trust)
         self._session = Session.create(
             user_id="cli_user",
             trust_level=trust_level,
-            max_turns=self.settings.memory.get("max_short_term_turns", 20),
+            max_turns=self.settings.memory.max_short_term_turns,
         )
 
         # Orchestrator — with streaming callback
@@ -193,7 +206,7 @@ class CLIInterface:
             Text(_BANNER, style="bold cyan"),
             justify="center",
         )
-        ver = self.settings.agent.get("version", "1.0.0")
+        ver = self.settings.agent.version
         provider = self.settings.default_llm_provider
         model = self.settings.default_llm_model
         trust = self._session.trust_level.value.upper()
@@ -224,7 +237,7 @@ class CLIInterface:
             _get_input = aioconsole.ainput
         except ImportError:
             # Fallback to blocking input run in executor
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             async def _get_input(prompt: str) -> str:
                 return await loop.run_in_executor(None, input, prompt)
 
@@ -249,7 +262,13 @@ class CLIInterface:
         await self._cleanup()
 
     def _build_prompt(self) -> str:
-        """Build the coloured CLI prompt string."""
+        """
+        Build the coloured CLI prompt string.
+
+        turn_count is incremented by add_user_message (called at the start of
+        run_turn), so by the time the prompt is next rendered the count already
+        reflects the turn that just completed.  We display it directly.
+        """
         trust = self._session.trust_level.value
         colours = {"low": "\033[32m", "medium": "\033[33m", "high": "\033[31m"}
         reset = "\033[0m"
@@ -269,6 +288,8 @@ class CLIInterface:
             handlers = {
                 "/help": lambda _: self._print_help(),
                 "/status": lambda _: self._cmd_status(),
+                "/compact": lambda _: self._cmd_compact(),
+                "/usage": lambda _: self._cmd_usage(),
                 "/tools": lambda _: self._cmd_tools(),
                 "/clear": lambda _: self._cmd_clear(),
                 "/cancel": lambda _: self._cmd_cancel(),
@@ -305,6 +326,7 @@ class CLIInterface:
             response = await self._orchestrator.run_turn(self._session, message)
 
         self._render_response(response)
+        self._maybe_suggest_compact()
 
     async def _cmd_run(self, goal: str) -> None:
         """Run the agent in autonomous multi-step mode."""
@@ -326,18 +348,112 @@ class CLIInterface:
                 self._session, goal
             ):
                 self._render_response(response)
-                # Small breathing room between streaming updates
                 if not response.is_final:
                     await asyncio.sleep(0)
         except asyncio.CancelledError:
             self.console.print("[yellow]🛑 Task cancelled.[/]")
 
     def _cmd_status(self) -> None:
-        """Show session status."""
-        from agent.response_synthesizer import ResponseSynthesizer
-        synth = ResponseSynthesizer()
-        response = synth.status(self._session)
+        """Show session status using the shared synthesizer."""
+        # Fix: use self._orchestrator._synth instead of a stray new instance
+        response = self._orchestrator._synth.status(self._session)
         self.console.print(Markdown(response.text))
+
+    async def _cmd_compact(self) -> None:
+        """Summarise old conversation turns and compress the context window."""
+        turns = self._session.memory.conversation.turn_count
+        keep = getattr(self.settings.memory, "compact_keep_recent", 4)
+
+        if turns <= keep:
+            self.console.print(
+                f"[dim]Nothing to compact — only {turns} turn(s) in buffer "
+                f"(need more than {keep}).[/]"
+            )
+            return
+
+        self.console.print(
+            f"[dim]Compacting {turns} turns → keeping last {keep} + summary...[/]"
+        )
+        try:
+            with self.console.status("[dim]Summarising conversation...[/]", spinner="dots"):
+                summary = await self._orchestrator.compact_session(
+                    self._session, keep_recent=keep
+                )
+        except RuntimeError as e:
+            self.console.print(f"[red]Compact failed: {e}[/]")
+            return
+        except Exception as e:
+            self.console.print(f"[red]Compact error: {e}[/]")
+            return
+
+        self.console.print(
+            Panel(
+                Markdown(f"**Summary of compacted turns:**\n\n{summary}"),
+                title="[cyan]✓ Compacted[/]",
+                border_style="cyan",
+                padding=(0, 2),
+            )
+        )
+        remaining = self._session.memory.conversation.turn_count
+        self.console.print(
+            f"[dim]Buffer: {turns} turns → {remaining} turns kept. "
+            f"Summary injected into context.[/]\n"
+        )
+
+    def _cmd_usage(self) -> None:
+        """Show token usage and estimated cost for this session."""
+        s = self._session
+        tokens_in  = s.total_input_tokens
+        tokens_out = s.total_output_tokens
+
+        # Rough cost estimates per 1M tokens (update as needed)
+        _COST_PER_M: dict[str, tuple[float, float]] = {
+            "bytez":      (5.00,  15.00),
+            "openai":     (5.00,  15.00),
+            "anthropic":  (3.00,  15.00),
+            "ollama":     (0.00,   0.00),
+            "openrouter": (5.00,  15.00),
+            "gemini":     (1.25,   5.00),
+        }
+        provider = self.settings.default_llm_provider.lower()
+        in_rate, out_rate = _COST_PER_M.get(provider, (5.00, 15.00))
+        cost_in  = tokens_in  / 1_000_000 * in_rate
+        cost_out = tokens_out / 1_000_000 * out_rate
+        total_cost = cost_in + cost_out
+
+        turns = s.turn_count
+        tool_calls = s.tool_call_count
+        buf_turns = s.memory.conversation.turn_count
+        has_summary = s.memory.conversation.has_summary
+
+        summary_note = " _(compacted)_" if has_summary else ""
+
+        text = (
+            f"## 📊 Session Usage\n\n"
+            f"**Tokens in:** {tokens_in:,}  ·  "
+            f"**Tokens out:** {tokens_out:,}  ·  "
+            f"**Total:** {tokens_in + tokens_out:,}\n\n"
+            f"**Estimated cost:** ${total_cost:.4f} "
+            f"_(@ ${in_rate}/M in, ${out_rate}/M out — {provider})_\n\n"
+            f"**Turns:** {turns}  ·  "
+            f"**Tool calls:** {tool_calls}  ·  "
+            f"**Buffer turns:** {buf_turns}{summary_note}"
+        )
+        self.console.print(Markdown(text))
+
+    def _maybe_suggest_compact(self) -> None:
+        """Print a one-time hint when turns exceed compact_after_turns threshold."""
+        threshold = getattr(self.settings.memory, "compact_after_turns", 15)
+        if threshold <= 0:
+            return
+        turns = self._session.turn_count
+        # Suggest at exactly the threshold, not on every subsequent turn
+        if turns == threshold:
+            self.console.print(
+                f"[dim yellow]💡 Tip: {turns} turns in this session. "
+                f"Run [bold]/compact[/bold] to summarise old context and free up "
+                f"the context window.[/]\n"
+            )
 
     def _cmd_tools(self) -> None:
         """List all registered tools."""
@@ -386,9 +502,24 @@ class CLIInterface:
         self.console.print("[dim]✓ Conversation history cleared.[/]")
 
     def _cmd_cancel(self) -> None:
-        """Cancel the current running task."""
-        self._session.cancel()
-        self.console.print("[yellow]🛑 Cancel signal sent.[/]")
+        """
+        Cancel the current running task.
+
+        Fix: guard against calling cancel when nothing is running, which
+        was previously a no-op but printed a misleading "Cancel signal sent."
+        message even when there was nothing to cancel.
+        """
+        if self._running_task and not self._running_task.done():
+            self._session.cancel()
+            self.console.print("[yellow]🛑 Cancel signal sent.[/]")
+        else:
+            # Also set the session cancel flag so autonomous loops pick it up
+            # even if we're not tracking the task via _running_task yet
+            if self._session.active_plan:
+                self._session.cancel()
+                self.console.print("[yellow]🛑 Cancel signal sent.[/]")
+            else:
+                self.console.print("[dim]Nothing is currently running.[/]")
 
     async def _cmd_trust(self, level: str) -> None:
         """Change the session trust level."""
@@ -458,49 +589,59 @@ class CLIInterface:
     # ── Response Rendering ────────────────────────────────────────────────────
 
     def _render_response(self, response: AgentResponse) -> None:
-        """Render an AgentResponse to the terminal using Rich."""
+        """
+        Render an AgentResponse to the terminal using Rich.
 
+        Fix: guard against empty text — a blank Panel looks like a bug and
+        can happen when the LLM returns an empty string or the Bytez client
+        falls back to "(no response)" after a parsing failure.
+        """
+        text = response.text.strip() if response.text else ""
         kind = response.kind
 
         if kind == ResponseKind.TEXT:
-            if response.text:
+            if text:
                 self.console.print(
                     Panel(
-                        Markdown(response.text),
+                        Markdown(text),
                         border_style="cyan",
                         padding=(0, 2),
                     )
                 )
 
         elif kind == ResponseKind.PLAN:
-            self.console.print(
-                Panel(
-                    Markdown(response.text),
-                    title="[yellow]📋 Plan[/]",
-                    border_style="yellow",
-                    padding=(0, 2),
+            if text:
+                self.console.print(
+                    Panel(
+                        Markdown(text),
+                        title="[yellow]📋 Plan[/]",
+                        border_style="yellow",
+                        padding=(0, 2),
+                    )
                 )
-            )
 
         elif kind == ResponseKind.PROGRESS:
-            # Inline — no panel, just a status line
-            self.console.print(f"  [dim cyan]{response.text}[/]")
+            if text:
+                self.console.print(f"  [dim cyan]{text}[/]")
 
         elif kind == ResponseKind.TOOL_RESULT:
-            self.console.print(f"  [green]{response.text}[/]")
+            if text:
+                self.console.print(f"  [green]{text}[/]")
 
         elif kind == ResponseKind.ERROR:
-            self.console.print(
-                Panel(
-                    Markdown(response.text),
-                    title="[red]Error[/]",
-                    border_style="red",
-                    padding=(0, 1),
+            if text:
+                self.console.print(
+                    Panel(
+                        Markdown(text),
+                        title="[red]Error[/]",
+                        border_style="red",
+                        padding=(0, 1),
+                    )
                 )
-            )
 
         elif kind == ResponseKind.STATUS:
-            self.console.print(Markdown(response.text))
+            if text:
+                self.console.print(Markdown(text))
 
         elif kind == ResponseKind.CONFIRMATION:
             self._handle_confirmation(response)
@@ -537,7 +678,6 @@ class CLIInterface:
         Callback from Orchestrator for mid-turn streaming updates.
         Called synchronously from async context — just renders inline.
         """
-        # For confirmation requests we handle them here directly
         if response.kind == ResponseKind.CONFIRMATION:
             self._handle_confirmation(response)
         elif response.kind in (ResponseKind.PROGRESS, ResponseKind.TOOL_RESULT):

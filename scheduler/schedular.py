@@ -230,12 +230,12 @@ class TaskScheduler:
     # ── Tick loop ─────────────────────────────────────────────────────────────
 
     async def _tick_loop(self) -> None:
-        """Main loop: wake every tick_interval and fire due tasks."""
+        """Main loop: check for due tasks immediately, then every tick_interval."""
         log.info("scheduler.tick_loop.started")
         while True:
             try:
+                await self._check_and_fire()          # check first, then sleep
                 await asyncio.sleep(self._tick_interval)
-                await self._check_and_fire()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -299,6 +299,11 @@ class TaskScheduler:
             task.next_run = now + task.interval_seconds
         else:
             task.enabled = False  # One-shot: disable after running
+
+        # Reset to IDLE so the task can be picked up again on the next tick,
+        # even if the previous run failed (FAILED status would block re-firing).
+        if task.enabled:
+            task.status = TaskStatus.IDLE
 
         if task.next_run:
             log.debug("scheduler.task.next_run",

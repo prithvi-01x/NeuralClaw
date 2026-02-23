@@ -95,7 +95,7 @@ async def main() -> int:
 
     log.info(
         "neuralclaw.starting",
-        version=settings.agent.get("version", "1.0.0"),
+        version=settings.agent.version,
         interface=args.interface,
         llm_provider=settings.default_llm_provider,
         llm_model=settings.default_llm_model,
@@ -120,8 +120,8 @@ async def main() -> int:
 
     # ── Ensure data directories exist ─────────────────────────────────────────
     for path_str in [
-        settings.memory.get("chroma_persist_dir", "./data/chroma"),
-        str(Path(settings.memory.get("sqlite_path", "./data/sqlite/episodes.db")).parent),
+        settings.memory.chroma_persist_dir,
+        str(Path(settings.memory.sqlite_path).parent),
         str(settings.log_dir),
         "./data/agent_files",
     ]:

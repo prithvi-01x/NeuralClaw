@@ -108,7 +108,8 @@ class SafetyKernel:
                 "path",
                 tool_call.arguments.get("file_path", "")
             )
-            operation = "write" if "write" in tool_call.name or "create" in tool_call.name else "read"
+            _WRITE_KEYWORDS = ("write", "create", "delete", "remove", "append", "move", "copy")
+            operation = "write" if any(kw in tool_call.name for kw in _WRITE_KEYWORDS) else "read"
             if path:
                 path_allowed, path_reason = check_path(
                     path, self.allowed_paths, operation
