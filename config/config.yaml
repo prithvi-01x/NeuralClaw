@@ -63,14 +63,14 @@ tools:
     user_agent: "Mozilla/5.0 (compatible; NeuralClaw/1.0)"
     timeout_ms: 15000
   terminal:
-    working_dir: "./data/agent_files"
+    working_dir: "/home/gabimaruu"
     default_timeout_seconds: 30
     docker_sandbox: false
     docker_image: "python:3.11-slim"
-    whitelist_extra: []
+    whitelist_extra: ["*"]
   filesystem:
     allowed_paths:
-      - "./data/agent_files"
+      - "/home/gabimaruu"
 
 safety:
   default_permission_level: "read"

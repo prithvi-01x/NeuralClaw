@@ -527,9 +527,23 @@ class TelegramBot:
         if data.startswith("model_select:"):
             model_key = data.split(":", 1)[1]
             opt = next((o for o in MODEL_OPTIONS if o.key == model_key), None)
+
             if opt is None:
-                await query.edit_message_text(f"⚠ Unknown model: `{model_key}`", parse_mode=ParseMode.MARKDOWN)
-                return
+                # allow dynamic models like ollama:qwen2.5:3b
+                if ":" in model_key:
+                    provider, model_id = model_key.split(":", 1)
+                    from interfaces.model_selector import ModelOption
+                    opt = ModelOption(
+                        key=model_key,
+                        name=model_id,
+                        description="Dynamic model",
+                        provider=provider,
+                        model_id=model_id,
+                        requires_key="",
+                    )
+                else:
+                    await query.edit_message_text(f"⚠ Unknown model: `{model_key}`", parse_mode="Markdown")
+                    return
 
             new_client, err = build_llm_client_for_model(opt, self._settings)
             if err or new_client is None:
