@@ -314,10 +314,19 @@ def _build_options_with_ollama(
     else:
         # Running models first, then alphabetical
         for meta in sorted(ollama_models, key=lambda m: (not m.is_running, m.model_id)):
+            # Look up capability hint from the registry
+            try:
+                from brain.capabilities import get_capabilities
+                caps = get_capabilities("ollama", meta.model_id)
+                cap_hint = "tools ✓" if caps.supports_tools else "chat only"
+            except Exception:
+                cap_hint = ""
+            base_desc = meta.meta_line
+            description = f"{base_desc} · {cap_hint}" if base_desc else cap_hint
             ollama_opts.append(ModelOption(
                 key=f"ollama:{meta.model_id}",
                 name=meta.model_id,
-                description=meta.meta_line,
+                description=description,
                 provider="ollama",
                 model_id=meta.model_id,
                 requires_key="",
@@ -620,6 +629,15 @@ def _render_selector(
         if unavailable:
             errs = f"[{err}]"
             tags += f" {_D}{errs}{_R}"; tv += len(errs) + 1
+        # Capability hint — show [chat only] for models without tool support
+        if not unavailable and not is_current:
+            try:
+                from brain.capabilities import get_capabilities
+                caps = get_capabilities(opt.provider, opt.model_id)
+                if not caps.supports_tools:
+                    tags += f" {_DIM}[chat only]{_R}"; tv += 11
+            except Exception:
+                pass
 
         # Name
         if unavailable:

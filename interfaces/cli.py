@@ -416,6 +416,22 @@ class CLIInterface:
                 f"(this session only).[/]"
             )
 
+        # Show capability notice so user knows what mode they're in
+        try:
+            from brain.capabilities import get_capabilities
+            caps = get_capabilities(provider, model_id)
+            if not caps.supports_tools:
+                self.console.print(
+                    f"[yellow]ℹ  {display_name} runs in [bold]chat-only mode[/bold] "
+                    f"— tool calling is not supported by this model.[/]"
+                )
+            else:
+                self.console.print(
+                    f"[dim]   Tools: enabled · Vision: {'yes' if caps.supports_vision else 'no'}[/]"
+                )
+        except Exception:
+            pass
+
     async def _cmd_ask(self, message: str) -> None:
         """Send a message to the agent and render the response."""
 

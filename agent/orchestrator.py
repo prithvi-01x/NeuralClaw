@@ -65,6 +65,69 @@ _MAX_ITER = 10
 _REASON_THRESHOLD = RiskLevel.HIGH
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Capability helpers (module-level so they can be used inside _agent_loop)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TOOL_ERROR_PHRASES = (
+    "does not support tools",
+    "does not support tool",
+    "tool_use is not supported",
+    "function calling is not supported",
+    "unsupported parameter: tools",
+    "tools is not supported",
+    "tool calls",
+)
+
+
+def _is_tool_error(err_lower: str) -> bool:
+    """Return True if an error message indicates tool calling is unsupported."""
+    return any(p in err_lower for p in _TOOL_ERROR_PHRASES)
+
+
+def _provider_name_from_client(client) -> str:
+    """Derive provider name string from a client instance."""
+    from brain.llm_client import ResilientLLMClient
+    actual = client
+    if isinstance(client, ResilientLLMClient):
+        actual = client.primary
+    cls_name = type(actual).__name__.lower()
+    if "openai" in cls_name:
+        return "openai"
+    if "anthropic" in cls_name:
+        return "anthropic"
+    if "ollama" in cls_name:
+        return "ollama"
+    if "gemini" in cls_name:
+        return "gemini"
+    if "openrouter" in cls_name:
+        return "openrouter"
+    if "bytez" in cls_name:
+        return "bytez"
+    return "unknown"
+
+
+def _register_no_tools(client, model_id: str) -> None:
+    """Register model as no-tools in capability registry and update client flag."""
+    from brain.capabilities import register_capabilities
+    provider = _provider_name_from_client(client)
+    register_capabilities(provider, model_id, supports_tools=False)
+    # Directly update client instance attribute if possible
+    try:
+        client.supports_tools = False
+    except AttributeError:
+        pass
+    # Also update inner primary client for ResilientLLMClient
+    from brain.llm_client import ResilientLLMClient
+    if isinstance(client, ResilientLLMClient):
+        try:
+            client._primary.supports_tools = False
+            client.supports_tools = False
+        except AttributeError:
+            pass
+
+
+
 class Orchestrator:
     """
     Coordinates the full agent loop for each user turn.
@@ -107,13 +170,12 @@ class Orchestrator:
         Replace the active LLM client and model ID without restarting.
 
         Propagates to Planner and Reasoner so all components use the new model.
-        Safe to call between turns — not during an active generate() call.
+        Also refreshes the capability registry so _agent_loop immediately picks
+        up the correct supports_tools value for the new model — no restart needed.
 
         Args:
             new_client:   The new LLM client instance.
             new_model_id: The model ID string for LLMConfig (e.g. "codellama:latest").
-                          Must be set when switching providers/models so the client
-                          receives the correct model name in every generate() call.
         """
         self._llm = new_client
         if new_model_id and hasattr(self, "_config"):
@@ -128,6 +190,31 @@ class Orchestrator:
             self._reasoner._llm = new_client
         if new_model_id and hasattr(self._reasoner, "_config"):
             self._reasoner._config.model = new_model_id
+
+        # Refresh OllamaClient's per-instance capability flags for the new model
+        if new_model_id and hasattr(new_client, "_refresh_capabilities"):
+            try:
+                new_client._refresh_capabilities(new_model_id)
+            except Exception:
+                pass
+
+        # Also propagate to inner primary for ResilientLLMClient
+        from brain.llm_client import ResilientLLMClient
+        if isinstance(new_client, ResilientLLMClient):
+            inner = new_client._primary
+            if new_model_id and hasattr(inner, "_refresh_capabilities"):
+                try:
+                    inner._refresh_capabilities(new_model_id)
+                    # Mirror the inner's supports_tools flag upward
+                    new_client.supports_tools = getattr(inner, "supports_tools", True)
+                except Exception:
+                    pass
+
+        log.info(
+            "orchestrator.model_swapped",
+            new_model=new_model_id or "same",
+            supports_tools=getattr(new_client, "supports_tools", True),
+        )
 
 
 
@@ -330,39 +417,55 @@ class Orchestrator:
     async def _agent_loop(self, session: Session, user_message: str) -> AgentResponse:
         """
         Core observe → think → act loop.
-        Iterates until the LLM produces a final text response (no tool calls),
+
+        Capability-aware: checks whether the active LLM supports tool calling
+        before building schemas.  If the LLM rejects tools at runtime, auto-
+        retries in chat-only mode and notifies the user once via on_response.
+
+        Iterates until the LLM produces a final text response (no tool calls)
         or until _max_iter is reached.
         """
-        # Build tool schemas — only for providers that support tool calling.
-        # Providers like Bytez declare supports_tools = False; passing tools
-        # to them raises LLMInvalidRequestError before hitting the network,
-        # which previously broke every single turn including simple "hey".
-        _provider_supports_tools = getattr(self._llm, "supports_tools", True)
-        llm_tools: list[BrainToolSchema] = (
-            [
-                BrainToolSchema(
-                    name=s.name,
-                    description=s.description,
-                    parameters=s.parameters,
-                )
-                for s in self._registry.list_schemas(enabled_only=True)
-            ]
-            if _provider_supports_tools
-            else []
-        )
-        if not _provider_supports_tools:
-            log.debug("orchestrator.tools_suppressed",
-                      reason="provider does not support tool calling")
+        from brain.capabilities import get_capabilities
 
-        # Build full message context
+        # ── Determine tool support ────────────────────────────────────────────
+        # Layer 1: client flag (set by OllamaClient per-model, Bytez always False)
+        _client_supports = getattr(self._llm, "supports_tools", True)
+        # Layer 2: capability registry keyed on (provider, model_id)
+        _registry_caps = get_capabilities(
+            _provider_name_from_client(self._llm),
+            self._config.model,
+        )
+        _supports_tools = _client_supports and _registry_caps.supports_tools
+
+        all_tool_schemas: list[BrainToolSchema] = [
+            BrainToolSchema(
+                name=s.name,
+                description=s.description,
+                parameters=s.parameters,
+            )
+            for s in self._registry.list_schemas(enabled_only=True)
+        ]
+        llm_tools: list[BrainToolSchema] = all_tool_schemas if _supports_tools else []
+
+        if not _supports_tools:
+            log.debug(
+                "orchestrator.tools_suppressed",
+                model=self._config.model,
+                reason="capability registry or client flag",
+            )
+
+        # ── Build message context ─────────────────────────────────────────────
         messages = await self._ctx.build(session=session, user_message=user_message)
+
+        # Track whether we have already notified the user about chat-only mode
+        _chat_only_notified = not _supports_tools
 
         for iteration in range(self._max_iter):
             if session.is_cancelled():
                 raise asyncio.CancelledError()
 
             log.debug("orchestrator.llm_call", iteration=iteration,
-                      msg_count=len(messages))
+                      msg_count=len(messages), tools_enabled=bool(llm_tools))
 
             # ── LLM call ──────────────────────────────────────────────────────
             try:
@@ -372,12 +475,32 @@ class Orchestrator:
                     tools=llm_tools or None,
                 )
             except LLMInvalidRequestError as e:
-                # Defensive: provider raised despite our supports_tools check.
-                log.warning("orchestrator.llm_invalid_request", error=str(e))
-                return self._synth.error(
-                    "Provider limitation",
-                    detail=str(e),
-                )
+                err_lower = str(e).lower()
+                # Auto-recover: if error is tool-related, retry without tools
+                if llm_tools and _is_tool_error(err_lower):
+                    log.warning(
+                        "orchestrator.tool_error_fallback",
+                        model=self._config.model,
+                        error=str(e),
+                    )
+                    llm_tools = []
+                    _supports_tools = False
+                    _register_no_tools(self._llm, self._config.model)
+                    if not _chat_only_notified and self._on_response:
+                        self._on_response(self._synth.info(
+                            f"⚠️ **{self._config.model}** does not support tools. "
+                            "Running in chat-only mode."
+                        ))
+                        _chat_only_notified = True
+                    # Retry same iteration without tools
+                    llm_resp = await self._llm.generate(
+                        messages=messages,
+                        config=self._config,
+                        tools=None,
+                    )
+                else:
+                    log.warning("orchestrator.llm_invalid_request", error=str(e))
+                    return self._synth.error("Provider limitation", detail=str(e))
 
             session.record_token_usage(
                 llm_resp.usage.input_tokens,
@@ -423,7 +546,6 @@ class Orchestrator:
             f"Reached maximum iterations ({self._max_iter}). "
             "Task may be too complex for a single turn."
         )
-
     # ─────────────────────────────────────────────────────────────────────────
     # Tool execution
     # ─────────────────────────────────────────────────────────────────────────

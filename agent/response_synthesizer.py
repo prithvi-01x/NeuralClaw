@@ -151,6 +151,10 @@ class ResponseSynthesizer:
             text += f"\n```\n{_clip(detail, 500)}\n```"
         return AgentResponse(kind=ResponseKind.ERROR, text=text)
 
+    def info(self, message: str) -> AgentResponse:
+        """Informational notice — rendered as a non-error status message."""
+        return AgentResponse(kind=ResponseKind.PROGRESS, text=message, is_final=False)
+
     def cancelled(self) -> AgentResponse:
         return AgentResponse(kind=ResponseKind.TEXT, text="🛑 Task cancelled.")
 

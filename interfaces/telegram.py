@@ -555,9 +555,21 @@ class TelegramBot:
             self._active_models[chat_id] = model_key
             self._pending_default[chat_id] = model_key
 
+            # Build capability notice for the confirmation message
+            cap_note = ""
+            try:
+                from brain.capabilities import get_capabilities
+                caps = get_capabilities(opt.provider, opt.model_id)
+                if not caps.supports_tools:
+                    cap_note = "\n⚠️ _Chat-only mode — tools not supported by this model._"
+                else:
+                    cap_note = "\n✅ _Tool calling: enabled_"
+            except Exception:
+                pass
+
             await query.edit_message_text(
                 f"✅ Switched to *{opt.name}*\n"
-                f"_Provider: {opt.provider} · session only_\n\n"
+                f"_Provider: {opt.provider} · session only_{cap_note}\n\n"
                 f"Use /model → *Set as Default* to persist across restarts.",
                 parse_mode=ParseMode.MARKDOWN,
             )
