@@ -99,8 +99,37 @@ class Orchestrator:
         self._reasoner = Reasoner(llm_client=llm_client, llm_config=llm_config)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Public: interactive turn
+    # Model hot-swap
     # ─────────────────────────────────────────────────────────────────────────
+
+    def swap_llm_client(self, new_client: BaseLLMClient, new_model_id: str = "") -> None:
+        """
+        Replace the active LLM client and model ID without restarting.
+
+        Propagates to Planner and Reasoner so all components use the new model.
+        Safe to call between turns — not during an active generate() call.
+
+        Args:
+            new_client:   The new LLM client instance.
+            new_model_id: The model ID string for LLMConfig (e.g. "codellama:latest").
+                          Must be set when switching providers/models so the client
+                          receives the correct model name in every generate() call.
+        """
+        self._llm = new_client
+        if new_model_id and hasattr(self, "_config"):
+            self._config.model = new_model_id
+
+        if hasattr(self._planner, "_llm"):
+            self._planner._llm = new_client
+        if new_model_id and hasattr(self._planner, "_config"):
+            self._planner._config.model = new_model_id
+
+        if hasattr(self._reasoner, "_llm"):
+            self._reasoner._llm = new_client
+        if new_model_id and hasattr(self._reasoner, "_config"):
+            self._reasoner._config.model = new_model_id
+
+
 
     async def run_turn(self, session: Session, user_message: str) -> AgentResponse:
         """

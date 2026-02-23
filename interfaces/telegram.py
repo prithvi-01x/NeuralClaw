@@ -61,7 +61,20 @@ import tools.terminal  # noqa: F401
 import tools.search  # noqa: F401
 import tools.web_fetch  # noqa: F401
 
+from interfaces.model_selector import (
+    build_telegram_model_keyboard,
+    build_telegram_model_keyboard_async,
+    format_telegram_model_list,
+    fetch_ollama_options,
+    build_llm_client_for_model,
+    save_default_model,
+    load_default_model,
+    current_model_key,
+    MODEL_OPTIONS,
+)
+
 log = get_logger(__name__)
+
 
 _MAX_MESSAGE_LEN = 4000  # Telegram limit is 4096 chars
 
@@ -80,6 +93,10 @@ class TelegramBot:
         self._orchestrators: dict[int, Orchestrator] = {}
         self._memory: Optional[MemoryManager] = None
         self._app: Optional[Application] = None
+        # Per-chat active model key (provider:model_id)
+        self._active_models: dict[int, str] = {}
+        # Pending default selection (chat_id → last selected model_key)
+        self._pending_default: dict[int, str] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -138,6 +155,7 @@ class TelegramBot:
         app.add_handler(CommandHandler("trust", self._cmd_trust))
         app.add_handler(CommandHandler("cancel", self._cmd_cancel))
         app.add_handler(CommandHandler("clear", self._cmd_clear))
+        app.add_handler(CommandHandler("model", self._cmd_model))
 
         # Callback for inline confirmation buttons
         app.add_handler(CallbackQueryHandler(self._on_confirm_callback))
@@ -444,19 +462,109 @@ class TelegramBot:
         session.clear_conversation()
         await update.message.reply_text("✓ Conversation history cleared.")
 
-    # ── Confirmation callback ─────────────────────────────────────────────────
+    async def _cmd_model(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show the inline model picker with live Ollama metadata."""
+        if not await self._auth_check(update):
+            return
+        chat_id     = update.effective_chat.id
+        current_key = self._active_models.get(chat_id, current_model_key(self._settings))
+
+        # Show "Loading…" message immediately, then update with live data
+        loading_msg = await update.message.reply_text("🔄 _Fetching model list…_", parse_mode="Markdown")
+
+        try:
+            # Fetch live Ollama data in parallel with building the keyboard
+            keyboard = await build_telegram_model_keyboard_async(self._settings, current_key)
+            text     = format_telegram_model_list(self._settings, current_key)
+            await loading_msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception:
+            # Fallback to sync (no live Ollama data)
+            text     = format_telegram_model_list(self._settings, current_key)
+            keyboard = build_telegram_model_keyboard(self._settings, current_key)
+            await loading_msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+
 
     async def _on_confirm_callback(
         self, update: Update, ctx: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Handle inline button presses for tool confirmation or trust change."""
+        """Handle inline button presses for tool confirmation, trust change, or model selection."""
         query = update.callback_query
         await query.answer()
 
         data = query.data or ""
         chat_id = update.effective_chat.id
 
-        # Trust HIGH confirmation
+        # ── Model selection ───────────────────────────────────────────────────
+
+        if data == "model_cancel":
+            await query.edit_message_text("Model unchanged.")
+            return
+
+        if data.startswith("model_unavailable:"):
+            model_key = data.split(":", 1)[1]
+            await query.answer(
+                f"⚠ {model_key} is unavailable (missing API key).",
+                show_alert=True,
+            )
+            return
+
+        if data == "model_set_default":
+            last_key = self._pending_default.get(chat_id)
+            if last_key:
+                save_default_model(last_key)
+                await query.edit_message_text(
+                    f"★ Default model saved: `{last_key}`",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            else:
+                await query.edit_message_text(
+                    "Select a model first, then tap *Set as Default*.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            return
+
+        if data.startswith("model_select:"):
+            model_key = data.split(":", 1)[1]
+            opt = next((o for o in MODEL_OPTIONS if o.key == model_key), None)
+            if opt is None:
+                await query.edit_message_text(f"⚠ Unknown model: `{model_key}`", parse_mode=ParseMode.MARKDOWN)
+                return
+
+            new_client, err = build_llm_client_for_model(opt, self._settings)
+            if err or new_client is None:
+                await query.edit_message_text(
+                    f"❌ Could not switch to `{opt.name}`:\n_{err or 'unknown error'}_",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+
+            orch = self._orchestrators.get(chat_id)
+            if orch:
+                try:
+                    orch.swap_llm_client(new_client, new_model_id=opt.model_id)
+                except AttributeError:
+                    orch._llm = new_client
+                    if hasattr(orch, "_config"):
+                        orch._config.model = opt.model_id
+                    if hasattr(orch, "_planner") and hasattr(orch._planner, "_config"):
+                        orch._planner._config.model = opt.model_id
+                    if hasattr(orch, "_reasoner") and hasattr(orch._reasoner, "_config"):
+                        orch._reasoner._config.model = opt.model_id
+
+            self._active_models[chat_id] = model_key
+            self._pending_default[chat_id] = model_key
+
+            await query.edit_message_text(
+                f"✅ Switched to *{opt.name}*\n"
+                f"_Provider: {opt.provider} · session only_\n\n"
+                f"Use /model → *Set as Default* to persist across restarts.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        # ── Trust HIGH confirmation ───────────────────────────────────────────
+
         if data == "trust_confirm_high":
             session = self._get_session(chat_id)
             session.set_trust_level(TrustLevel.HIGH)
@@ -467,7 +575,8 @@ class TelegramBot:
             await query.edit_message_text("Trust level unchanged.")
             return
 
-        # Tool confirmation: data format = "confirm_<tool_call_id>_yes/no"
+        # ── Tool confirmation: "confirm_<tool_call_id>_yes/no" ───────────────
+
         if data.startswith("confirm_"):
             parts = data.split("_", 2)
             if len(parts) == 3:
@@ -477,6 +586,8 @@ class TelegramBot:
                 session.resolve_confirmation(tool_call_id, approved)
                 status = "✅ Approved" if approved else "❌ Denied"
                 await query.edit_message_text(f"{status}.")
+
+
 
     # ── Response rendering ────────────────────────────────────────────────────
 

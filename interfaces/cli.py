@@ -45,6 +45,15 @@ from rich.text import Text
 from rich import box
 
 from agent.orchestrator import Orchestrator
+from interfaces.model_selector import (
+    run_model_selector,
+    build_llm_client_for_model,
+    fetch_ollama_options,
+    save_default_model,
+    load_default_model,
+    current_model_key,
+    MODEL_OPTIONS,
+)
 from agent.response_synthesizer import AgentResponse, ResponseKind
 from agent.session import Session
 from brain import LLMClientFactory
@@ -86,6 +95,7 @@ _HELP_TEXT = """
 | `/memory <query>` | Search long-term memory |
 | `/tools` | List all registered tools |
 | `/trust <low\\|medium\\|high>` | Set session trust level |
+| `/model` | Interactively switch the active LLM model |
 | `/compact` | Summarise old turns and compress context window |
 | `/usage` | Show token usage and estimated cost for this session |
 | `/clear` | Clear conversation history |
@@ -111,6 +121,19 @@ _TRUST_COLOURS = {
 }
 
 
+def _make_adhoc_option(provider: str, model_id: str):
+    """Construct a minimal ModelOption for a provider/model not in MODEL_OPTIONS."""
+    from interfaces.model_selector import ModelOption
+    return ModelOption(
+        key=f"{provider}:{model_id}",
+        name=model_id,
+        description="Custom model",
+        provider=provider,
+        model_id=model_id,
+        requires_key="",
+    )
+
+
 # ── CLI Runner ────────────────────────────────────────────────────────────────
 
 
@@ -130,6 +153,8 @@ class CLIInterface:
         self._memory: Optional[MemoryManager] = None
         self._running_task: Optional[asyncio.Task] = None
         self._shutdown = asyncio.Event()
+        # Track active model key for the model selector
+        self._active_model_key: Optional[str] = None
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -198,6 +223,7 @@ class CLIInterface:
 
         log.info("cli.initialized", session_id=self._session.id)
         self.console.print("[dim]✓ Ready[/]\n")
+        self._active_model_key = current_model_key(self.settings)
 
     # ── Banner & Help ─────────────────────────────────────────────────────────
 
@@ -208,7 +234,7 @@ class CLIInterface:
         )
         ver = self.settings.agent.version
         provider = self.settings.default_llm_provider
-        model = self.settings.default_llm_model
+        model = self._active_model_key or f"{provider}/{self.settings.default_llm_model}"
         trust = self._session.trust_level.value.upper()
         trust_colour = _TRUST_COLOURS.get(self._session.trust_level, "white")
 
@@ -265,16 +291,24 @@ class CLIInterface:
         """
         Build the coloured CLI prompt string.
 
-        turn_count is incremented by add_user_message (called at the start of
-        run_turn), so by the time the prompt is next rendered the count already
-        reflects the turn that just completed.  We display it directly.
+        Shows: NeuralClaw[trust][model][turn]>
         """
         trust = self._session.trust_level.value
         colours = {"low": "\033[32m", "medium": "\033[33m", "high": "\033[31m"}
         reset = "\033[0m"
         colour = colours.get(trust, reset)
         turns = self._session.turn_count
-        return f"{colour}NeuralClaw[{trust}][{turns}]{reset}> "
+        model_label = self._active_model_key or current_model_key(self.settings)
+        # Shorten auto/long model keys for prompt display
+        if model_label.startswith("openai:"):
+            model_label = model_label[7:]
+        elif model_label.startswith("anthropic:"):
+            model_label = model_label[10:]
+        elif model_label.startswith("gemini:"):
+            model_label = model_label[7:]
+        elif model_label.startswith("ollama:"):
+            model_label = model_label[7:]
+        return f"{colour}NeuralClaw[{trust}][{model_label}][{turns}]{reset}> "
 
     # ── Command Dispatch ──────────────────────────────────────────────────────
 
@@ -286,17 +320,18 @@ class CLIInterface:
             arg = parts[1].strip() if len(parts) > 1 else ""
 
             handlers = {
-                "/help": lambda _: self._print_help(),
-                "/status": lambda _: self._cmd_status(),
+                "/help":    lambda _: self._print_help(),
+                "/status":  lambda _: self._cmd_status(),
                 "/compact": lambda _: self._cmd_compact(),
-                "/usage": lambda _: self._cmd_usage(),
-                "/tools": lambda _: self._cmd_tools(),
-                "/clear": lambda _: self._cmd_clear(),
-                "/cancel": lambda _: self._cmd_cancel(),
-                "/trust": self._cmd_trust,
-                "/memory": self._cmd_memory,
-                "/run": self._cmd_run,
-                "/ask": self._cmd_ask,
+                "/usage":   lambda _: self._cmd_usage(),
+                "/tools":   lambda _: self._cmd_tools(),
+                "/clear":   lambda _: self._cmd_clear(),
+                "/cancel":  lambda _: self._cmd_cancel(),
+                "/model":   lambda _: self._cmd_model(),
+                "/trust":   self._cmd_trust,
+                "/memory":  self._cmd_memory,
+                "/run":     self._cmd_run,
+                "/ask":     self._cmd_ask,
             }
 
             handler = handlers.get(cmd)
@@ -314,8 +349,76 @@ class CLIInterface:
 
     # ── Commands ──────────────────────────────────────────────────────────────
 
+    async def _cmd_model(self) -> None:
+        """Open the interactive model picker."""
+        result = await run_model_selector(
+            console=self.console,
+            settings=self.settings,
+            current_key=self._active_model_key,
+        )
+
+        if result is None:
+            self.console.print("[dim]Model unchanged.[/]")
+            return
+
+        provider, model_id, set_default = result
+
+        # Find the ModelOption for display
+        selected_opt = next(
+            (o for o in MODEL_OPTIONS if o.provider == provider and o.model_id == model_id),
+            None,
+        )
+        display_name = f"{provider}:{model_id}" if not selected_opt else selected_opt.name
+
+        # Build new LLM client — pass live options so auto-resolve uses Ollama data
+        with self.console.status(f"[dim]Switching to {display_name}...[/]", spinner="dots"):
+            new_client, err = build_llm_client_for_model(
+                selected_opt or _make_adhoc_option(provider, model_id),
+                self.settings,
+                options=MODEL_OPTIONS,
+            )
+
+        if err or new_client is None:
+            self.console.print(
+                f"[red]✗ Could not switch to {display_name}: {err or 'unknown error'}[/]"
+            )
+            return
+
+        # Hot-swap client AND model ID across orchestrator, planner, and reasoner
+        try:
+            self._orchestrator.swap_llm_client(new_client, new_model_id=model_id)
+        except AttributeError:
+            # Fallback for older orchestrator without swap_llm_client
+            self._orchestrator._llm = new_client
+            if hasattr(self._orchestrator, "_config"):
+                self._orchestrator._config.model = model_id
+            if hasattr(self._orchestrator, "_planner") and hasattr(self._orchestrator._planner, "_config"):
+                self._orchestrator._planner._config.model = model_id
+            if hasattr(self._orchestrator, "_reasoner") and hasattr(self._orchestrator._reasoner, "_config"):
+                self._orchestrator._reasoner._config.model = model_id
+
+        # Update settings so prompt and banner reflect the new model
+        self.settings.llm.default_provider = provider
+        self.settings.llm.default_model = model_id
+
+        new_key = f"{provider}:{model_id}"
+        self._active_model_key = new_key
+
+        if set_default:
+            save_default_model(new_key)
+            self.console.print(
+                f"[green]✓ Switched to [bold]{display_name}[/bold] "
+                f"and saved as default.[/]"
+            )
+        else:
+            self.console.print(
+                f"[green]✓ Switched to [bold]{display_name}[/bold] "
+                f"(this session only).[/]"
+            )
+
     async def _cmd_ask(self, message: str) -> None:
         """Send a message to the agent and render the response."""
+
         if not message:
             self.console.print("[yellow]Usage: /ask <message>[/]")
             return
