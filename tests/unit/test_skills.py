@@ -897,11 +897,13 @@ class TestBuiltinIntegrity:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestPluginDirectory:
-    def test_empty_plugins_dir_loads_zero_skills(self):
-        plugins_dir = Path(__file__).parent.parent.parent / "skills" / "plugins"
+    def test_empty_plugins_dir_loads_zero_skills(self, tmp_path):
+        # Use a freshly created empty directory — the real plugins/ dir may have
+        # real plugin files in it (echo_skill.py, gitpr.md, etc.), so pointing at
+        # it makes the test fragile to future additions.
         loader = SkillLoader()
-        reg = loader.load_all([plugins_dir])
-        # __init__.py is skipped, so nothing loaded
+        reg = loader.load_all([tmp_path])
+        # No Python skill files here, so nothing loaded
         assert len(reg) == 0
 
     def test_plugin_added_to_plugins_dir_appears_in_registry(self, tmp_path):

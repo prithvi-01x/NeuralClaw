@@ -342,8 +342,11 @@ def check_path(
 
     # Step 1: Always-blocked path prefixes
     for prefix in BLOCKED_PATH_PREFIXES:
-        if path_str.startswith(prefix):
-            return False, f"Path blocked: '{path_str}' is within a protected system location ({prefix})"
+        try:
+            if resolved.is_relative_to(Path(prefix)):
+                return False, f"Path blocked: '{path_str}' is within a protected system location ({prefix})"
+        except ValueError:
+            pass
 
     # Step 2: Always-blocked path patterns (SSH keys, .env files, etc.)
     for pattern, reason in BLOCKED_PATH_PATTERNS:
@@ -369,8 +372,11 @@ def check_path(
     # Step 5: Always-readable locations (read operations only)
     if operation == "read":
         for prefix in ALWAYS_READABLE_PREFIXES:
-            if path_str.startswith(prefix):
-                return True, f"Path '{path_str}' is in an always-readable location"
+            try:
+                if resolved.is_relative_to(Path(prefix)):
+                    return True, f"Path '{path_str}' is in an always-readable location"
+            except ValueError:
+                pass
 
     return (
         False,

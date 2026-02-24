@@ -195,7 +195,7 @@ class MemoryManager:
                 hits = await self.long_term.search(query, col, n_per_collection)
                 if hits:
                     results[col] = hits
-            except (NeuralClawError, MemoryError, OSError, ValueError) as e:
+            except (NeuralClawError, MemorySubsystemError, OSError, ValueError) as e:
                 log.warning("memory_manager.search_collection_failed", collection=col, error=str(e))
         return results
 

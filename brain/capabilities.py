@@ -79,7 +79,7 @@ _PROVIDER_DEFAULTS: dict[str, ModelCapabilities] = {
     "gemini":     ModelCapabilities(supports_tools=True,  supports_vision=True,  supports_stream=True),
     "openrouter": ModelCapabilities(supports_tools=True,  supports_vision=False, supports_stream=True),
     "ollama":     ModelCapabilities(supports_tools=False, supports_vision=False, supports_stream=True),
-    "bytez":      ModelCapabilities(supports_tools=False, supports_vision=False, supports_stream=False),
+    "bytez":      ModelCapabilities(supports_tools=True,  supports_vision=False, supports_stream=False),
     "auto":       ModelCapabilities(supports_tools=True,  supports_vision=False, supports_stream=True),
 }
 
@@ -212,6 +212,23 @@ def get_capabilities(provider: str, model_id: str) -> ModelCapabilities:
     return caps
 
 
+def is_explicitly_known(provider: str, model_id: str) -> bool:
+    """Check if the model's capabilities are explicitly known vs fallback."""
+    provider = (provider or "").lower().strip()
+    model_id = (model_id or "").lower().strip()
+    
+    if (provider, model_id) in _RUNTIME_REGISTRY:
+        return True
+        
+    for pat_provider, pattern, _ in _MODEL_OVERRIDES:
+        if pat_provider == provider:
+            pat = pattern.rstrip(":").lower()
+            if model_id.startswith(pat) or pat in model_id:
+                return True
+                
+    return False
+
+
 def register_capabilities(
     provider: str,
     model_id: str,
@@ -329,10 +346,8 @@ async def probe_ollama_tool_support(model_id: str, base_url: str = "http://local
     import json
 
     # Fast path: check pattern registry first
-    known = get_capabilities("ollama", model_id)
-    # If we have an explicit non-default entry, trust it
-    if ("ollama", model_id.lower()) in _RUNTIME_REGISTRY:
-        return known.supports_tools
+    if is_explicitly_known("ollama", model_id):
+        return get_capabilities("ollama", model_id).supports_tools
 
     try:
         body = json.dumps({"model": model_id}).encode()

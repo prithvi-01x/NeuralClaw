@@ -823,7 +823,7 @@ class TestExecutorDispatch:
 class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_creates_task(self):
-        from agent.executor import _fire_and_forget
+        from agent.utils import fire_and_forget as _fire_and_forget
 
         async def _noop():
             pass
@@ -834,12 +834,12 @@ class TestFireAndForget:
 
     @pytest.mark.asyncio
     async def test_logs_exception_on_failure(self):
-        from agent.executor import _fire_and_forget
+        from agent.utils import fire_and_forget as _fire_and_forget
 
         async def _fail():
             raise RuntimeError("oops")
 
-        with patch("agent.executor.log") as mock_log:
+        with patch("agent.utils.log") as mock_log:
             task = _fire_and_forget(_fail(), label="test_task")
             await asyncio.sleep(0.01)  # allow task to complete
             mock_log.warning.assert_called()

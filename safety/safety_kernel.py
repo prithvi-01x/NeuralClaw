@@ -78,7 +78,7 @@ class SafetyKernel:
         call_id = skill_call.id
 
         # ── 1. Enabled check ─────────────────────────────────────────────────
-        if not manifest.enabled if hasattr(manifest, "enabled") else False:
+        if hasattr(manifest, "enabled") and not manifest.enabled:
             reason = f"Skill '{name}' is disabled in configuration."
             log.info("safety.blocked.disabled", skill=name, call_id=call_id)
             return self._decision(skill_call, RiskLevel.MEDIUM,

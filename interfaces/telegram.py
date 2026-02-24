@@ -58,6 +58,7 @@ from skills.types import TrustLevel
 # Skill system
 from pathlib import Path as _SkillPath
 from skills.loader import SkillLoader as _SkillLoader
+from skills.md_loader import MarkdownSkillLoader as _MdSkillLoader
 from skills.bus import SkillBus as _SkillBus
 
 from interfaces.model_selector import (
@@ -264,6 +265,12 @@ class TelegramBot:
                     _base / "skills" / "plugins",
                 ],
                 strict=True,   # production: raise on broken skill files
+            )
+            # Also load markdown skills (OpenClaw-compatible SKILL.md format)
+            _MdSkillLoader().load_all(
+                [_base / "skills" / "plugins"],
+                registry=_skill_registry,
+                strict=False,
             )
             _skill_bus = _SkillBus(
                 registry=_skill_registry,

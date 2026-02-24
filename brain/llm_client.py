@@ -169,6 +169,8 @@ class ResilientLLMClient(BaseLLMClient):
         self._max_delay = max_delay
         # Mirror the primary's tool support so the orchestrator's pre-check works
         self.supports_tools = getattr(primary, "supports_tools", True)
+        # Tracks the client that last produced a successful response (for health_check)
+        self._active_client: BaseLLMClient = primary
 
     @property
     def primary(self) -> BaseLLMClient:
@@ -199,7 +201,7 @@ class ResilientLLMClient(BaseLLMClient):
                 self.supports_tools = getattr(client, "supports_tools", True)
 
             try:
-                return await _call_with_retry(
+                result = await _call_with_retry(
                     client=client,
                     messages=messages,
                     config=config,
@@ -208,6 +210,8 @@ class ResilientLLMClient(BaseLLMClient):
                     base_delay=self._base_delay,
                     max_delay=self._max_delay,
                 )
+                self._active_client = client  # remember who succeeded
+                return result
             except (LLMContextError, LLMInvalidRequestError):
                 raise  # permanent — no point trying fallbacks
             except (LLMConnectionError, LLMRateLimitError, LLMError) as e:
@@ -226,7 +230,8 @@ class ResilientLLMClient(BaseLLMClient):
         )
 
     async def health_check(self) -> bool:
-        return await self._primary.health_check()
+        """Ping the currently-active client (may be a fallback after failover)."""
+        return await self._active_client.health_check()
 
     def __repr__(self) -> str:
         n = len(self._fallbacks)

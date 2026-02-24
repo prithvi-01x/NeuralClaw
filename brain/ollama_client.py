@@ -68,14 +68,26 @@ class OllamaClient(BaseLLMClient):
     # Capability management
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _refresh_capabilities(self, model_id: str) -> None:
+    async def _refresh_capabilities(self, model_id: str) -> None:
         """
         Update supports_tools / supports_vision from the capability registry
         whenever the active model changes.  Called at the start of generate().
         """
         if model_id == self._last_model:
             return
-        from brain.capabilities import get_capabilities
+            
+        from brain.capabilities import get_capabilities, is_explicitly_known, probe_ollama_tool_support, register_capabilities
+        
+        # If we don't know the model, attempt to probe it dynamically before defaulting
+        if not is_explicitly_known("ollama", model_id):
+            try:
+                supports_tools = await probe_ollama_tool_support(model_id, self.base_url)
+                register_capabilities("ollama", model_id, supports_tools=supports_tools)
+                log.info("ollama.capability_probe_success", model=model_id, supports_tools=supports_tools)
+            except Exception as e:
+                log.warning("ollama.capability_probe_failed", model=model_id, error=str(e))
+                # Will fall back to whatever get_capabilities returns below
+
         caps = get_capabilities("ollama", model_id)
         self.supports_tools  = caps.supports_tools
         self.supports_vision = caps.supports_vision
@@ -113,7 +125,7 @@ class OllamaClient(BaseLLMClient):
         tools: Optional[list[ToolSchema]] = None,
     ) -> LLMResponse:
         # Refresh capability flags whenever the model changes
-        self._refresh_capabilities(config.model)
+        await self._refresh_capabilities(config.model)
 
         # Strip tools upfront if capabilities say this model doesn't support them
         effective_tools: Optional[list[ToolSchema]] = tools if self.supports_tools else None

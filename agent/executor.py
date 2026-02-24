@@ -36,35 +36,7 @@ log = get_logger(__name__)
 _REASON_THRESHOLD = RiskLevel.HIGH
 
 
-# Module-level strong-reference set — prevents asyncio from GC-ing tasks mid-flight.
-_BG_TASKS: set[asyncio.Task] = set()
-
-
-def _fire_and_forget(coro, label: str = "bg_task") -> asyncio.Task:
-    """
-    Schedule a coroutine as a background task with logged error handling.
-
-    Holds a strong reference via _BG_TASKS so the GC cannot cancel the task
-    before it completes. The reference is released in the done-callback.
-    """
-    task = asyncio.create_task(coro)
-    _BG_TASKS.add(task)  # strong ref — prevents GC reaping
-
-    def _on_done(t: asyncio.Task) -> None:
-        _BG_TASKS.discard(t)  # release strong ref when finished
-        if t.cancelled():
-            return
-        exc = t.exception()
-        if exc is not None:
-            log.warning(
-                "bg_task.failed",
-                label=label,
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
-
-    task.add_done_callback(_on_done)
-    return task
+from agent.utils import fire_and_forget as _fire_and_forget
 
 
 class Executor:
@@ -81,11 +53,13 @@ class Executor:
         bus: SkillBus,
         reasoner,               # agent.reasoner.Reasoner — loose typing avoids circular import
         memory_manager,         # memory.memory_manager.MemoryManager
+        confirmation_timeout: int = 120,
     ) -> None:
         self._registry = registry
         self._bus = bus
         self._reasoner = reasoner
         self._memory = memory_manager
+        self._confirmation_timeout = confirmation_timeout
 
     async def dispatch(
         self,
@@ -139,7 +113,7 @@ class Executor:
                 synth = ResponseSynthesizer()
                 on_response(synth.confirmation_request(confirm_req))
             try:
-                return await asyncio.wait_for(future, timeout=120.0)
+                return await asyncio.wait_for(future, timeout=self._confirmation_timeout)
             except asyncio.TimeoutError:
                 log.warning(
                     "executor.confirm_timeout",
@@ -188,7 +162,7 @@ class Executor:
             session_id=session.id,
             tool_name=btc.name,
             arguments=btc.arguments,
-            result=result.content[:500],
+            result=(result.content or "")[:500],
             is_error=result.is_error,
             risk_level=result.risk_level.value,
             duration_ms=result.duration_ms,

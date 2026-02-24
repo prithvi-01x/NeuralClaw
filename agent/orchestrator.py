@@ -48,6 +48,7 @@ from observability.trace import TraceContext
 from skills.bus import SkillBus
 from skills.registry import SkillRegistry
 from skills.types import RiskLevel, TrustLevel
+from skills.md_loader import MarkdownSkillLoader as _MdSkillLoader
 
 from agent.context_builder import ContextBuilder
 from agent.executor import Executor
@@ -72,41 +73,7 @@ _REASON_THRESHOLD = RiskLevel.HIGH
 # Fire-and-forget helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Module-level strong-reference set — prevents asyncio from GC-ing tasks mid-flight.
-# Tasks are /removed/ in the done-callback so the set never grows unbounded.
-_BG_TASKS: set[asyncio.Task] = set()
-
-
-def _fire_and_forget(coro, label: str = "bg_task") -> asyncio.Task:
-    """
-    Schedule a coroutine as a background asyncio task.
-
-    Unlike a bare asyncio.create_task(), this:
-      1. Holds a strong reference so the GC cannot cancel the task mid-flight.
-      2. Attaches a done-callback that logs any unhandled exception so failures
-         are never silently swallowed.
-      3. Removes the task from the reference set when complete (no unbounded growth).
-
-    The label is included in the log entry for easy grep-ability.
-    """
-    task = asyncio.create_task(coro)
-    _BG_TASKS.add(task)  # strong ref — prevents GC reaping
-
-    def _on_done(t: asyncio.Task) -> None:
-        _BG_TASKS.discard(t)  # release strong ref when finished
-        if t.cancelled():
-            return
-        exc = t.exception()
-        if exc is not None:
-            log.warning(
-                "bg_task.failed",
-                label=label,
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
-
-    task.add_done_callback(_on_done)
-    return task
+from agent.utils import fire_and_forget as _fire_and_forget
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -275,11 +242,14 @@ class Orchestrator:
         self._reasoner = Reasoner(llm_client=llm_client, llm_config=llm_config)
 
         # Phase 3: Executor and Reflector as separate objects
+        # We default the explicit confirmation timeout to max_turn_timeout / 2 or so if unset,
+        # but in practice this is injected via from_settings. For raw instantiation we default it.
         self._executor = Executor(
             registry=tool_registry,
             bus=tool_bus,
             reasoner=self._reasoner,
             memory_manager=memory_manager,
+            confirmation_timeout=max_turn_timeout, # basic default, from_settings has the real one
         )
         self._reflector = Reflector(
             reasoner=self._reasoner,
@@ -290,6 +260,10 @@ class Orchestrator:
         # on model swap. The registry is read-only after init, so rebuilding
         # on every _agent_loop call is wasteful with many skills.
         self._cached_tool_schemas: list[BrainToolSchema] | None = None
+
+        # Cache for markdown skill instructions block — rebuilt only when None
+        # (first call or after swap_llm_client invalidates it).
+        self._cached_md_instructions: str | None = None
     # ─────────────────────────────────────────────────────────────────────────
 
     def swap_llm_client(self, new_client: BaseLLMClient, new_model_id: str = "") -> None:
@@ -364,6 +338,8 @@ class Orchestrator:
         )
         # Invalidate schema cache — the new model may have different tool support
         self._cached_tool_schemas = None
+        # Invalidate MD instructions cache — new model may affect which skills apply
+        self._cached_md_instructions = None
 
 
 
@@ -490,125 +466,169 @@ class Orchestrator:
             steps_taken: list[str] = []
             plan = session.active_plan
             _MAX_RECOVERY_DEPTH = 3  # max consecutive recovery attempts per step
+            _MAX_TOTAL_STEPS = 100   # absolute cap on plan length
             _recovery_depth = 0       # resets to 0 whenever a step succeeds
 
-            while plan and not plan.is_complete:
-                if session.is_cancelled():
-                    yield self._synth.cancelled()
-                    break
+            # Configured overall timeout for autonomous execution, hardcapped if missing
+            timeout = getattr(self._settings.agent, "max_autonomous_timeout_seconds", 3600)
 
-                step = plan.current_step
-                if step is None:
-                    break
+            async def _execute_loop() -> AsyncGenerator[AgentResponse, None]:
+                nonlocal _recovery_depth
+                while plan and not plan.is_complete:
+                    if session.is_cancelled():
+                        yield self._synth.cancelled()
+                        break
 
-                log.info("orchestrator.plan_step", index=step.index,
-                         description=step.description[:80])
-
-                yield self._synth.tool_progress(
-                    tool_name=f"Step {step.index + 1}",
-                    step=step.index + 1,
-                    total=len(plan.steps),
-                    detail=step.description,
-                )
-
-                step_prompt = (
-                    f"Execute this step:\n{step.description}\n\n"
-                    f"Overall goal: {goal}"
-                )
-
-                try:
-                    # Phase 4: log step start in TaskMemory
-                    self._memory.task_log_step(
-                        plan_id=plan_id,
-                        step_id=f"step_{step.index}",
-                        description=step.description,
-                    )
-                    step_turn = await self.run_turn(session, step_prompt)
-                    # Phase 4: record result in TaskMemory
-                    self._memory.task_update_result(
-                        plan_id=plan_id,
-                        step_id=f"step_{step.index}",
-                        result_content=step_turn.response.text[:300],
-                        is_error=not step_turn.succeeded,
-                        duration_ms=step_turn.duration_ms,
-                    )
-                    step.result_summary = step_turn.response.text[:200]
-                    steps_taken.append(
-                        f"Step {step.index + 1}: {step.description} "
-                        f"→ {step_turn.response.text[:100]}"
-                    )
-                    plan.advance()
-                    _recovery_depth = 0  # successful step resets recovery counter
-
-                    if len(step_turn.response.text.strip()) > 80:
-                        yield step_turn.response
-
-                except NeuralClawError as step_err:
-                    step.error = str(step_err)
-                    log.warning("orchestrator.step_failed", step=step.description[:80],
-                                error=str(step_err), error_type=type(step_err).__name__)
-                except BaseException as step_err:
-                    step.error = str(step_err)
-                    log.error("orchestrator.step_unexpected_error", step=step.description[:80],
-                              error=str(step_err), error_type=type(step_err).__name__, exc_info=True)
-
-                    yield self._synth.error(
-                        f"Step {step.index + 1} encountered an error",
-                        detail=str(step_err),
-                    )
-
-                    # Enforce maximum consecutive recovery depth
-                    if _recovery_depth >= _MAX_RECOVERY_DEPTH:
-                        log.warning(
-                            "orchestrator.recovery_depth_exceeded",
-                            step=step.description[:80],
-                            max_depth=_MAX_RECOVERY_DEPTH,
-                        )
+                    if len(plan.steps) > _MAX_TOTAL_STEPS:
                         yield self._synth.error(
-                            f"Step {step.index + 1} failed after {_MAX_RECOVERY_DEPTH} "
-                            "recovery attempts. Stopping autonomous execution.",
-                            detail=str(step_err),
+                            f"Plan exceeded absolute maximum of {_MAX_TOTAL_STEPS} steps. "
+                            "Stopping to prevent infinite recovery loops."
                         )
                         break
 
-                    recovery = await self._planner.create_recovery(
-                        goal=goal,
-                        failed_step=step.description,
-                        error=str(step_err),
-                        steps_remaining=[
-                            s.description
-                            for s in plan.steps[plan.current_step_index + 1:]
-                        ],
+                    step = plan.current_step
+                    if step is None:
+                        break
+
+                    log.info("orchestrator.plan_step", index=step.index,
+                             description=step.description[:80])
+
+                    yield self._synth.tool_progress(
+                        tool_name=f"Step {step.index + 1}",
+                        step=step.index + 1,
+                        total=len(plan.steps),
+                        detail=step.description,
                     )
 
-                    if recovery.can_recover and recovery.recovery_steps:
-                        _recovery_depth += 1
-                        insert_at = plan.current_step_index + 1
-                        # Insert all recovery steps at once, then do a single O(n)
-                        # re-index pass (avoids O(n²) re-index inside the loop).
-                        new_steps = [
-                            PlanStep(
-                                index=insert_at + i,
-                                description=f"[Recovery] {rdesc}",
+                    step_prompt = (
+                        f"Execute this step:\n{step.description}\n\n"
+                        f"Overall goal: {goal}"
+                    )
+
+                    try:
+                        # Phase 4: log step start in TaskMemory
+                        self._memory.task_log_step(
+                            plan_id=plan_id,
+                            step_id=f"step_{step.index}",
+                            description=step.description,
+                        )
+                        step_turn = await self.run_turn(session, step_prompt)
+                        # Phase 4: record result in TaskMemory
+                        self._memory.task_update_result(
+                            plan_id=plan_id,
+                            step_id=f"step_{step.index}",
+                            result_content=step_turn.response.text[:300],
+                            is_error=not step_turn.succeeded,
+                            duration_ms=step_turn.duration_ms,
+                        )
+                        step.result_summary = step_turn.response.text[:200]
+                        steps_taken.append(
+                            f"Step {step.index + 1}: {step.description} "
+                            f"→ {step_turn.response.text[:100]}"
+                        )
+                        plan.advance()
+                        _recovery_depth = 0  # successful step resets recovery counter
+
+                        if len(step_turn.response.text.strip()) > 80:
+                            yield step_turn.response
+
+                    except NeuralClawError as step_err:
+                        step.error = str(step_err)
+                        log.warning("orchestrator.step_failed", step=step.description[:80],
+                                    error=str(step_err), error_type=type(step_err).__name__)
+                    except BaseException as step_err:
+                        step.error = str(step_err)
+                        log.error("orchestrator.step_unexpected_error", step=step.description[:80],
+                                  error=str(step_err), error_type=type(step_err).__name__, exc_info=True)
+
+                        yield self._synth.error(
+                            f"Step {step.index + 1} encountered an error",
+                            detail=str(step_err),
+                        )
+
+                        # Enforce maximum consecutive recovery depth
+                        if _recovery_depth >= _MAX_RECOVERY_DEPTH:
+                            log.warning(
+                                "orchestrator.recovery_depth_exceeded",
+                                step=step.description[:80],
+                                max_depth=_MAX_RECOVERY_DEPTH,
                             )
-                            for i, rdesc in enumerate(recovery.recovery_steps)
-                        ]
-                        plan.steps[insert_at:insert_at] = new_steps
-                        for j, s in enumerate(plan.steps):
-                            s.index = j
-                        if recovery.skip_failed_step:
-                            plan.advance()
-                        yield AgentResponse(
-                            kind=ResponseKind.PROGRESS,
-                            text=f"⚠️ Attempting recovery: {recovery.recovery_steps[0]}",
-                            is_final=False,
+                            yield self._synth.error(
+                                f"Step {step.index + 1} failed after {_MAX_RECOVERY_DEPTH} "
+                                "recovery attempts. Stopping autonomous execution.",
+                                detail=str(step_err),
+                            )
+                            break
+
+                        recovery = await self._planner.create_recovery(
+                            goal=goal,
+                            failed_step=step.description,
+                            error=str(step_err),
+                            steps_remaining=[
+                                s.description
+                                for s in plan.steps[plan.current_step_index + 1:]
+                            ],
                         )
-                    else:
-                        yield self._synth.error(
-                            f"Step {step.index + 1} failed and could not be recovered.",
-                            detail=str(step_err),
-                        )
+
+                        if recovery.can_recover and recovery.recovery_steps:
+                            _recovery_depth += 1
+                            insert_at = plan.current_step_index + 1
+                            # Insert all recovery steps at once, then do a single O(n)
+                            # re-index pass (avoids O(n²) re-index inside the loop).
+                            new_steps = [
+                                PlanStep(
+                                    index=insert_at + i,
+                                    description=f"[Recovery] {rdesc}",
+                                )
+                                for i, rdesc in enumerate(recovery.recovery_steps)
+                            ]
+                            plan.steps[insert_at:insert_at] = new_steps
+                            for j, s in enumerate(plan.steps):
+                                s.index = j
+                            if recovery.skip_failed_step:
+                                plan.advance()
+                            yield AgentResponse(
+                                kind=ResponseKind.PROGRESS,
+                                text=f"⚠️ Attempting recovery: {recovery.recovery_steps[0]}",
+                                is_final=False,
+                            )
+                        else:
+                            yield self._synth.error(
+                                f"Step {step.index + 1} failed and could not be recovered.",
+                                detail=str(step_err),
+                            )
+                            break
+
+            # Run the loop with an overall wall-clock timeout
+            import asyncio
+            try:
+                # We can't use wait_for directly on an async generator, so we iterate it
+                # with a timeout on the *entire* process. We use an async def to allow
+                # wait_for to manage the timeout over the loop execution time.
+                async def _consume():
+                    async for item in _execute_loop():
+                        yield item
+
+                # Since async generators don't support wait_for directly, we must wrap each
+                # next() call in wait_for, keeping a rolling timeout.
+                loop_start = asyncio.get_running_loop().time()
+                agen = _execute_loop()
+                while True:
+                    elapsed = asyncio.get_running_loop().time() - loop_start
+                    remaining = timeout - elapsed
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+
+                    try:
+                        item = await asyncio.wait_for(anext(agen), timeout=remaining)
+                        yield item
+                    except StopAsyncIteration:
                         break
+            except asyncio.TimeoutError:
+                log.warning("orchestrator.autonomous_timeout", session_id=session.id, timeout=timeout)
+                yield self._synth.error(
+                    f"Autonomous execution timed out after {timeout} seconds."
+                )
 
             # 4. Reflect + commit episode via Reflector
             if steps_taken and not session.is_cancelled():
@@ -702,7 +722,15 @@ class Orchestrator:
             )
 
         # ── Build message context ─────────────────────────────────────────────
-        messages = await self._ctx.build(session=session, user_message=user_message)
+        # Inject markdown skill instructions into system prompt (cached per instance).
+        if self._cached_md_instructions is None:
+            self._cached_md_instructions = _MdSkillLoader().get_instructions_block(self._registry)
+        _md_extra = self._cached_md_instructions
+        messages = await self._ctx.build(
+            session=session,
+            user_message=user_message,
+            extra_system=_md_extra if _md_extra else None,
+        )
         _chat_only_notified = not _supports_tools
 
         for iteration in range(self._max_iter):
@@ -996,7 +1024,7 @@ class Orchestrator:
             temperature=settings.llm.temperature,
             max_tokens=settings.llm.max_tokens,
         )
-        return cls(
+        orch = cls(
             llm_client=llm_client,
             llm_config=llm_config,
             tool_bus=tool_bus,
@@ -1007,3 +1035,9 @@ class Orchestrator:
             max_turn_timeout=settings.agent.max_turn_timeout_seconds,
             on_response=on_response,
         )
+        
+        # Override the defaults in the raw constructor now that we have the full settings
+        # Used for run_autonomous
+        orch._settings = settings
+        orch._executor._confirmation_timeout = settings.agent.confirmation_timeout_seconds
+        return orch

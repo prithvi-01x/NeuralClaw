@@ -68,6 +68,8 @@ class AgentConfig(BaseModel):
     version: str = "1.0.0"
     max_iterations_per_turn: int = 10
     max_turn_timeout_seconds: int = 300
+    max_autonomous_timeout_seconds: int = 3600
+    confirmation_timeout_seconds: int = 120
     default_trust_level: str = "low"
 
     @field_validator("default_trust_level")

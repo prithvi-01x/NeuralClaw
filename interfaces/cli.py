@@ -67,6 +67,7 @@ from exceptions import NeuralClawError, MemoryError as NeuralClawMemoryError, LL
 # Skill system — loads builtin + plugin skills at startup
 from pathlib import Path as _SkillPath
 from skills.loader import SkillLoader as _SkillLoader
+from skills.md_loader import MarkdownSkillLoader as _MdSkillLoader
 from skills.bus import SkillBus as _SkillBus
 
 log = get_logger(__name__)
@@ -204,6 +205,12 @@ class CLIInterface:
                 _base / "skills" / "plugins",
             ],
             strict=True,   # production: raise on broken skill files
+        )
+        # Also load markdown skills (OpenClaw-compatible SKILL.md format)
+        _MdSkillLoader().load_all(
+            [_base / "skills" / "plugins"],
+            registry=_skill_registry,
+            strict=False,  # warn on bad MD files, don't crash startup
         )
         self._skill_bus = _SkillBus(
             registry=_skill_registry,

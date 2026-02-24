@@ -56,12 +56,6 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Enable MCP server connections on startup",
     )
-    parser.add_argument(
-        "--enable-scheduler",
-        action="store_true",
-        default=False,
-        help="Enable the task scheduler",
-    )
     return parser.parse_args()
 
 
@@ -150,6 +144,33 @@ async def main() -> int:
         return 1
 
     log.info("neuralclaw.config_loaded", agent_name=settings.agent_name)
+
+    # ── Test LLM API Key validity ─────────────────────────────────────────────
+    # Instantiating the factory and running health_check ensures the configured
+    # key is actually valid with the provider, failing fast if not.
+    log.info("neuralclaw.testing_llm", provider=settings.default_llm_provider)
+    from brain import LLMClientFactory
+    try:
+        client = LLMClientFactory.from_settings(settings)
+        is_healthy = await client.health_check()
+        if not is_healthy:
+            log.error(
+                "neuralclaw.llm_health_check_failed",
+                provider=settings.default_llm_provider,
+            )
+            print(
+                f"\n❌  LLM health check failed for '{settings.default_llm_provider}'.\n"
+                f"    Please double check your API key and network connection.\n",
+                file=sys.stderr,
+            )
+            return 1
+    except Exception as e:
+        log.error("neuralclaw.llm_init_failed", error=str(e))
+        print(
+            f"\n❌  Failed to initialize LLM provider '{settings.default_llm_provider}': {e}\n",
+            file=sys.stderr,
+        )
+        return 1
 
     # ── Ensure data directories exist ─────────────────────────────────────────
     for path_str in [
