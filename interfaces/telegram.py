@@ -115,8 +115,14 @@ class TelegramBot:
         )
         await self._memory.init()
 
-        # Build the application
-        self._app = Application.builder().token(token).build()
+        # Build the application — support optional HTTPS/SOCKS5 proxy
+        import os as _os
+        proxy_url = _os.environ.get("TELEGRAM_PROXY") or _os.environ.get("HTTPS_PROXY") or _os.environ.get("https_proxy")
+        builder = Application.builder().token(token)
+        if proxy_url:
+            builder = builder.proxy(proxy_url).get_updates_proxy(proxy_url)
+            print(f"   Proxy: {proxy_url}")
+        self._app = builder.build()
         self._register_handlers()
 
         log.info("telegram.starting", authorized_ids=list(self._authorized_ids))
@@ -136,8 +142,13 @@ class TelegramBot:
     async def stop(self) -> None:
         if self._memory:
             await self._memory.close()
-        if self._app:
-            await self._app.stop()
+        if self._app and self._app.running:
+            try:
+                await self._app.updater.stop()
+                await self._app.stop()
+                await self._app.shutdown()
+            except RuntimeError:
+                pass  # already stopped or never started
         log.info("telegram.stopped")
 
     # ── Handler registration ──────────────────────────────────────────────────
@@ -850,10 +861,18 @@ async def run_telegram(settings: Settings, log) -> None:
     """Entry point called from main.py."""
     bot = TelegramBot(settings=settings)
     log.info("telegram_bot.starting")
+    started = False
     try:
         await bot.start()
+        started = True
     except KeyboardInterrupt:
         log.info("telegram_bot.interrupted")
+    except Exception as e:
+        log.error("telegram_bot.start_failed", error=str(e))
+        print(f"\n\u274c Failed to connect to Telegram: {e}")
+        print("   Check your TELEGRAM_BOT_TOKEN and network/proxy settings.")
+        return
     finally:
-        await bot.stop()
-        log.info("telegram_bot.stopped")
+        if started:
+            await bot.stop()
+            log.info("telegram_bot.stopped")

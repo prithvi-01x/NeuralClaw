@@ -91,7 +91,7 @@ _HELP_TEXT = """
 | `/run <goal>` | Start autonomous multi-step task execution |
 | `/status` | Show current session status and stats |
 | `/memory <query>` | Search long-term memory |
-| `/tools` | List all registered tools |
+| `/tools` or `/skills` | List all registered skills/tools |
 | `/trust <low\\|medium\\|high>` | Set session trust level |
 | `/grant <capability>` | Grant a capability for this session (e.g. `fs:delete`) |
 | `/revoke <capability>` | Revoke a previously granted capability |
@@ -337,6 +337,7 @@ class CLIInterface:
                 "/compact": lambda _: self._cmd_compact(),
                 "/usage":   lambda _: self._cmd_usage(),
                 "/tools":   lambda _: self._cmd_tools(),
+                "/skills":  lambda _: self._cmd_tools(),
                 "/clear":   lambda _: self._cmd_clear(),
                 "/cancel":  lambda _: self._cmd_cancel(),
                 "/model":   lambda _: self._cmd_model(),
@@ -591,7 +592,7 @@ class CLIInterface:
 
     def _cmd_tools(self) -> None:
         """List all registered tools."""
-        schemas = self._skill_bus.registry.list_schemas(enabled_only=False)
+        schemas = self._skill_bus._registry.list_schemas(enabled_only=False)
         if not schemas:
             self.console.print("[dim]No tools registered.[/]")
             return

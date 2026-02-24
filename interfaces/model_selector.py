@@ -637,7 +637,7 @@ def _render_selector(
                 from brain.capabilities import get_capabilities
                 caps = get_capabilities(opt.provider, opt.model_id)
                 if not caps.supports_tools:
-                    tags += f" {_DIM}[chat only]{_R}"; tv += 11
+                    tags += f" {_D}[chat only]{_R}"; tv += 11
             except (NeuralClawError, AttributeError, ValueError) as _cap_err:
                 import logging as _logging
                 _logging.getLogger(__name__).debug("model_selector.caps_check_failed: %s", _cap_err)
