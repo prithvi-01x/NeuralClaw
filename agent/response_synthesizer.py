@@ -1,7 +1,7 @@
 """
 agent/response_synthesizer.py — Response Synthesizer
 
-Converts raw agent outputs (LLMResponse, ToolResult, SafetyDecision)
+Converts raw agent outputs (LLMResponse, SkillResult, SafetyDecision)
 into AgentResponse objects that Telegram / CLI can render.
 """
 
@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Optional
 
 from brain.types import LLMResponse
-from tools.types import RiskLevel, SafetyDecision, ToolResult
+from skills.types import RiskLevel, SafetyDecision, SkillResult
 
 
 class ResponseKind(str, Enum):
@@ -73,7 +73,7 @@ class ResponseSynthesizer:
                              tool_name=tool_name, is_final=False,
                              metadata={"step": step, "total": total})
 
-    def tool_success(self, result: ToolResult, summary: Optional[str] = None) -> AgentResponse:
+    def tool_success(self, result: SkillResult, summary: Optional[str] = None) -> AgentResponse:
         display = summary or _clip(result.content, 400)
         text = f"✅ **{result.name}** — {display}"
         return AgentResponse(kind=ResponseKind.TOOL_RESULT, text=text,
@@ -81,7 +81,7 @@ class ResponseSynthesizer:
                              metadata={"duration_ms": round(result.duration_ms, 1),
                                        "risk_level": result.risk_level.value})
 
-    def tool_error(self, result: ToolResult) -> AgentResponse:
+    def tool_error(self, result: SkillResult) -> AgentResponse:
         text = f"❌ **{result.name}** failed\n```\n{_clip(result.content, 300)}\n```"
         return AgentResponse(kind=ResponseKind.ERROR, text=text, tool_name=result.name,
                              metadata={"risk_level": result.risk_level.value})

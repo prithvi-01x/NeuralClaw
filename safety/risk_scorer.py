@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from tools.types import RiskLevel, ToolCall, ToolSchema
+from skills.types import RiskLevel, SkillCall, SkillManifest
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -67,18 +67,18 @@ SENSITIVE_WRITE_PATHS: list[re.Pattern] = [
 
 
 def score_tool_call(
-    tool_call: ToolCall,
-    schema: ToolSchema,
+    tool_call: SkillCall,
+    schema: SkillManifest,
 ) -> tuple[RiskLevel, str]:
     """
-    Compute the effective risk level for a tool call.
+    Compute the effective risk level for a skill call.
 
-    Starts from the tool's registered baseline risk and escalates
+    Starts from the skill's registered baseline risk and escalates
     based on argument analysis.
 
     Args:
-        tool_call: The tool call to evaluate.
-        schema:    The tool's registered schema (contains baseline risk).
+        tool_call: The SkillCall to evaluate.
+        schema:    The skill's manifest (contains baseline risk and category).
 
     Returns:
         (effective_risk_level, reason_string)
@@ -106,7 +106,7 @@ def score_tool_call(
     # ── Filesystem-specific checks ────────────────────────────────────────────
     if schema.category == "filesystem":
         path = args.get("path", args.get("file_path", ""))
-        operation = _infer_fs_operation(tool_call.name)
+        operation = _infer_fs_operation(tool_call.skill_name)
 
         if operation == "write" and path:
             for pattern in SENSITIVE_WRITE_PATHS:
@@ -126,7 +126,7 @@ def score_tool_call(
                 return _max_risk(baseline, RiskLevel.MEDIUM), "Command uses pipe chain"
 
     # ── No escalation — return baseline ──────────────────────────────────────
-    return baseline, f"Using baseline risk level for tool '{tool_call.name}'"
+    return baseline, f"Using baseline risk level for skill '{tool_call.skill_name}'"
 
 
 def _flatten_args(args: dict[str, Any]) -> str:

@@ -17,7 +17,8 @@ from io import StringIO
 import pytest
 
 from agent.response_synthesizer import AgentResponse, ResponseKind
-from tools.types import RiskLevel, SafetyDecision, SafetyStatus, TrustLevel
+from agent.orchestrator import TurnResult, TurnStatus
+from skills.types import RiskLevel, SafetyDecision, SafetyStatus, TrustLevel
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -71,7 +72,13 @@ def mock_session():
 @pytest.fixture
 def mock_orchestrator():
     orc = MagicMock()
-    orc.run_turn = AsyncMock(return_value=make_response(text="Test response"))
+    response = make_response(text="Test response")
+    orc.run_turn = AsyncMock(return_value=TurnResult(
+        status=TurnStatus.SUCCESS,
+        response=response,
+        steps_taken=0,
+        duration_ms=10.0
+    ))
     return orc
 
 
@@ -94,6 +101,7 @@ def cli(mock_session, mock_orchestrator, mock_memory):
     cli._session = mock_session
     cli._orchestrator = mock_orchestrator
     cli._memory = mock_memory
+    cli._skill_bus = MagicMock()  # Added to fix TestCmdTools
     cli.console = Console(file=StringIO(), highlight=False)   # silent console
     return cli
 
@@ -153,13 +161,9 @@ class TestDispatch:
         assert "Unknown command" in call_args or "nonexistent" in call_args
 
     @pytest.mark.asyncio
-    async def test_empty_input_not_dispatched(self, cli):
+    async def test_empty_ask_prints_usage(self, cli):
         cli._cmd_ask = AsyncMock()
-        await cli._repl_loop.__func__  # just check it won't dispatch empty
-        # dispatch empty string
-        cli._cmd_ask = AsyncMock()
-        await cli._dispatch("")  # bare call - routes to _cmd_ask with ""
-        # empty ask prints usage
+        await cli._dispatch("/ask")
         cli._cmd_ask.assert_awaited_once_with("")
 
 
@@ -185,8 +189,14 @@ class TestCmdAsk:
 
     @pytest.mark.asyncio
     async def test_error_response_rendered(self, cli, mock_orchestrator):
-        mock_orchestrator.run_turn.return_value = make_response(
+        response = make_response(
             kind=ResponseKind.ERROR, text="Something went wrong"
+        )
+        mock_orchestrator.run_turn.return_value = TurnResult(
+            status=TurnStatus.ERROR,
+            response=response,
+            steps_taken=0,
+            duration_ms=10.0
         )
         cli._render_response = MagicMock()
         await cli._cmd_ask("Trigger error")
@@ -289,7 +299,7 @@ class TestCmdMemory:
                     id="1",
                     text="Python asyncio is great for I/O bound tasks",
                     collection="knowledge",
-                    distance=0.1,
+                    distance=0.2,
                 )
             ]
         }
@@ -391,7 +401,8 @@ class TestRenderResponse:
 
 
 class TestHandleConfirmation:
-    def test_approved_resolves_session(self, cli, mock_session):
+    @pytest.mark.asyncio
+    async def test_approved_resolves_session(self, cli, mock_session):
         mock_session.register_confirmation("call_abc")
         r = make_response(
             kind=ResponseKind.CONFIRMATION,
@@ -404,7 +415,8 @@ class TestHandleConfirmation:
         fut = mock_session._pending_confirmations.get("call_abc")
         assert fut is None  # resolved and popped
 
-    def test_denied_resolves_session_false(self, cli, mock_session):
+    @pytest.mark.asyncio
+    async def test_denied_resolves_session_false(self, cli, mock_session):
         mock_session.register_confirmation("call_xyz")
         r = make_response(
             kind=ResponseKind.CONFIRMATION,

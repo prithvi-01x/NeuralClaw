@@ -13,6 +13,7 @@ from typing import Optional
 from brain.llm_client import BaseLLMClient
 from brain.types import LLMConfig, Message
 from observability.logger import get_logger
+from exceptions import NeuralClawError
 
 log = get_logger(__name__)
 
@@ -89,8 +90,11 @@ class Planner:
         try:
             response = await self._llm.generate(messages=messages, config=self._config)
             return self._parse_plan(response.content or "")
-        except Exception as e:
-            log.warning("planner.create_plan_failed", error=str(e))
+        except (NeuralClawError, ValueError, RuntimeError) as e:
+            log.warning("planner.create_plan_failed", error=str(e), error_type=type(e).__name__)
+            return PlanResult(steps=[f"Complete the following task: {goal}"])
+        except BaseException as e:
+            log.warning("planner.create_plan_failed", error=str(e), error_type=type(e).__name__)
             return PlanResult(steps=[f"Complete the following task: {goal}"])
 
     async def create_recovery(
@@ -113,8 +117,11 @@ class Planner:
         try:
             response = await self._llm.generate(messages=messages, config=self._config)
             return self._parse_recovery(response.content or "")
-        except Exception as e:
-            log.warning("planner.recovery_failed", error=str(e))
+        except (NeuralClawError, ValueError, RuntimeError) as e:
+            log.warning("planner.recovery_failed", error=str(e), error_type=type(e).__name__)
+            return RecoveryResult(recovery_steps=[], can_recover=False)
+        except BaseException as e:
+            log.warning("planner.recovery_failed", error=str(e), error_type=type(e).__name__)
             return RecoveryResult(recovery_steps=[], can_recover=False)
 
     # ── Parsers ───────────────────────────────────────────────────────────────
@@ -133,8 +140,17 @@ class Planner:
             )
         except (json.JSONDecodeError, ValueError) as e:
             log.warning("planner.parse_plan_failed", error=str(e), raw=content[:200])
-            # Fall back to line-based extraction
-            lines = [l.strip().lstrip("0123456789.-) ") for l in content.splitlines() if l.strip()]
+            # Fall back to line-based extraction.
+            # Use regex to strip leading step numbers like "1.", "2)", "- ", etc.
+            # (lstrip("0123456789.-) ") treated its arg as a character SET, not a
+            # prefix pattern, and could eat leading digits from the step text itself.)
+            import re as _re
+            _STEP_PREFIX = _re.compile(r"^\d+[\.\)\-]\s*|^[-*•]\s+")
+            lines = [
+                _STEP_PREFIX.sub("", l.strip())
+                for l in content.splitlines()
+                if l.strip()
+            ]
             lines = [l for l in lines if l and not l.startswith("{")]
             return PlanResult(steps=lines[:10] if lines else ["Execute the task"])
 

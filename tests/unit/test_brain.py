@@ -147,7 +147,19 @@ class TestLLMClientFactory:
         assert isinstance(client, OpenRouterClient)
 
     def test_create_gemini(self):
-        with patch("google.genai.Client"):
+        import sys
+        import types
+        # Ensure google.genai is importable so brain.gemini_client can be loaded
+        if "google" not in sys.modules:
+            sys.modules["google"] = types.ModuleType("google")
+        if "google.genai" not in sys.modules:
+            sys.modules["google.genai"] = types.ModuleType("google.genai")
+        if "google.genai.types" not in sys.modules:
+            sys.modules["google.genai.types"] = types.ModuleType("google.genai.types")
+        import importlib
+        import brain.gemini_client as _gc_mod
+        importlib.reload(_gc_mod)
+        with patch("brain.gemini_client.genai"):
             from brain.gemini_client import GeminiClient
             client = LLMClientFactory.create("gemini", api_key="AIza-test")
             assert isinstance(client, GeminiClient)

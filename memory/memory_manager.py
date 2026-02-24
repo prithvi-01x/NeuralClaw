@@ -33,7 +33,9 @@ from memory.embedder import Embedder
 from memory.episodic import Episode, EpisodicMemory, Reflection, ToolCallRecord
 from memory.long_term import LongTermMemory, MemoryEntry
 from memory.short_term import ShortTermMemory
+from memory.task import TaskMemory, TaskMemoryStore
 from observability.logger import get_logger
+from exceptions import NeuralClawError, MemoryError as MemorySubsystemError
 
 log = get_logger(__name__)
 
@@ -67,6 +69,7 @@ class MemoryManager:
         self.episodic = EpisodicMemory(db_path=sqlite_path)
         self._max_short_term_turns = max_short_term_turns
         self._sessions: dict[str, ShortTermMemory] = {}
+        self._task_store: TaskMemoryStore = TaskMemoryStore()
         self._initialized = False
 
     async def init(self, load_embedder: bool = True) -> None:
@@ -106,6 +109,11 @@ class MemoryManager:
         """
         Get or create short-term memory for a session.
         Sessions are in-process only — not persisted.
+
+        Safe to call before init(): ShortTermMemory is a pure in-memory
+        structure and does not require the embedder, ChromaDB, or SQLite
+        to be initialised. Persistent operations (store, search, etc.)
+        will still fail with a RuntimeError if called before init().
         """
         if session_id not in self._sessions:
             self._sessions[session_id] = ShortTermMemory(
@@ -117,7 +125,7 @@ class MemoryManager:
         return self._sessions[session_id]
 
     def clear_session(self, session_id: str) -> None:
-        """Remove a session's short-term memory."""
+        """Remove a session's short-term memory. Safe to call before init()."""
         if session_id in self._sessions:
             del self._sessions[session_id]
 
@@ -159,7 +167,7 @@ class MemoryManager:
                 hits = await self.long_term.search(query, col, n_per_collection)
                 if hits:
                     results[col] = hits
-            except Exception as e:
+            except (NeuralClawError, MemoryError, OSError, ValueError) as e:
                 log.warning("memory_manager.search_collection_failed", collection=col, error=str(e))
         return results
 
@@ -274,6 +282,9 @@ class MemoryManager:
         then formats it as a readable block the LLM can reference.
         """
         self._require_init()
+        # Prune stale TaskMemory objects from prior turns (max 1 hour retention).
+        self._task_store.prune_old(max_age_seconds=3600)
+
         results = await self.search_all(query, n_per_collection=2)
         if not results:
             return ""
@@ -304,8 +315,51 @@ class MemoryManager:
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
+    # ── Task memory (in-flight plan state) ──────────────────────────────────
+    # These are thin proxies to TaskMemoryStore. The store itself is a pure
+    # in-memory structure; no async I/O is required and init() is not needed.
+
+    def task_create(self, plan_id: str, goal: str) -> TaskMemory:
+        """Create and register a new TaskMemory for the given plan."""
+        return self._task_store.create(plan_id=plan_id, goal=goal)
+
+    def task_log_step(self, plan_id: str, step_id: str, description: str) -> bool:
+        """Record that a plan step has started."""
+        return self._task_store.log_step(plan_id=plan_id, step_id=step_id, description=description)
+
+    def task_update_result(
+        self,
+        plan_id: str,
+        step_id: str,
+        result_content: str,
+        is_error: bool = False,
+        duration_ms: float = 0.0,
+    ) -> bool:
+        """Record the result of a completed plan step."""
+        return self._task_store.update_result(
+            plan_id=plan_id,
+            step_id=step_id,
+            result_content=result_content,
+            is_error=is_error,
+            duration_ms=duration_ms,
+        )
+
+    def task_close(self, plan_id: str) -> Optional[TaskMemory]:
+        """Mark a plan as successfully completed."""
+        return self._task_store.close(plan_id=plan_id)
+
+    def task_fail(self, plan_id: str, reason: str) -> Optional[TaskMemory]:
+        """Mark a plan as failed."""
+        return self._task_store.fail(plan_id=plan_id, reason=reason)
+
+    def task_get(self, plan_id: str) -> Optional[TaskMemory]:
+        """Return the TaskMemory for a plan, or None if not found."""
+        return self._task_store.get(plan_id)
+
+    # ── Internal ─────────────────────────────────────────────────────────────
+
     def _require_init(self) -> None:
         if not self._initialized:
-            raise RuntimeError(
+            raise MemorySubsystemError(
                 "MemoryManager not initialized. Call `await mm.init()` first."
             )

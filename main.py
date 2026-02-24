@@ -41,8 +41,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--config",
-        default="config/config.yaml",
-        help="Path to config.yaml (default: config/config.yaml)",
+        default=None,
+        help="Path to config.yaml (default: $NEURALCLAW_CONFIG or config/config.yaml)",
     )
     parser.add_argument(
         "--log-level",
@@ -67,14 +67,47 @@ def parse_args() -> argparse.Namespace:
 
 def bootstrap(args: argparse.Namespace):
     """
-    Load config and set up logging.
+    Load config, validate it fully, and set up logging.
     Returns (settings, log) ready for use.
+
+    Exits with code 1 (after printing a clear message) if:
+      - config.yaml has invalid/unsafe values (Pydantic ValidationError)
+      - cross-field problems are found (ConfigError from validate_all())
     """
-    from config.settings import load_settings
+    from config.settings import load_settings, ConfigError
     from observability.logger import setup_logging, get_logger
+    from pydantic import ValidationError
 
-    settings = load_settings(args.config)
+    # -- Load and parse -------------------------------------------------------
+    try:
+        settings = load_settings(args.config)
+    except ValidationError as exc:
+        # Pydantic rejected a field value (wrong type, bad value, etc.)
+        problems = "\n".join(
+            f"  • {e['loc'][-1] if e['loc'] else '?'}: {e['msg']}"
+            for e in exc.errors()
+        )
+        print(
+            f"\n❌  Config validation failed:\n\n{problems}\n\n"
+            f"    Fix config/config.yaml or your .env file and restart.\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except Exception as exc:
+        print(
+            f"\n❌  Failed to load config: {exc}\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
+    # -- Cross-field validation -----------------------------------------------
+    try:
+        settings.validate_all()
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+
+    # -- Logging --------------------------------------------------------------
     # CLI --log-level flag overrides config.yaml
     log_level = args.log_level or settings.log_level
 

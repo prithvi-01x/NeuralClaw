@@ -39,7 +39,16 @@ class MemoryEntry:
     text: str
     collection: str
     metadata: dict = field(default_factory=dict)
-    relevance_score: float = 0.0
+    distance: Optional[float] = None
+    relevance_score: float = field(default=0.0, init=False)
+
+    def __post_init__(self) -> None:
+        if self.distance is not None:
+            # ChromaDB cosine distance: 0 = identical, 2 = opposite.
+            # Convert to similarity score in [0, 1], clamped.
+            self.relevance_score = max(0.0, 1.0 - (self.distance / 2.0))
+        else:
+            self.relevance_score = 0.0
 
 
 class LongTermMemory:
@@ -151,7 +160,7 @@ class LongTermMemory:
                     text=raw["documents"][0][i] if raw.get("documents") else "",
                     collection=collection,
                     metadata=raw["metadatas"][0][i] if raw.get("metadatas") else {},
-                    relevance_score=score,
+                    distance=distance,
                 ))
         return sorted(entries, key=lambda e: e.relevance_score, reverse=True)
 

@@ -54,10 +54,17 @@ class Reasoner:
 
     def __init__(self, llm_client: BaseLLMClient, llm_config: LLMConfig):
         self._llm = llm_client
+        # Shared low-temperature config for structured/deterministic calls (eval, think)
         self._config = LLMConfig(
             model=llm_config.model,
             temperature=0.1,
             max_tokens=200,
+        )
+        # Reflection generates prose lessons — needs more room than eval/think
+        self._reflect_config = LLMConfig(
+            model=llm_config.model,
+            temperature=0.3,
+            max_tokens=400,
         )
 
     async def evaluate_tool_call(
@@ -115,7 +122,7 @@ class Reasoner:
         messages = [Message.system(_REFLECT_SYSTEM), Message.user(user_content)]
 
         try:
-            response = await self._llm.generate(messages=messages, config=self._config)
+            response = await self._llm.generate(messages=messages, config=self._reflect_config)
             lesson = (response.content or "").strip()
             log.debug("reasoner.reflect", lesson=lesson[:150])
             return lesson

@@ -330,6 +330,10 @@ def check_path(
         resolved = Path.cwd()
     else:
         try:
+            # expanduser() + resolve() follows symlinks — a path like
+            # ./data/../../etc/passwd resolves to /etc/passwd and is caught
+            # by the BLOCKED_PATH_PREFIXES check below. Symlink attacks are
+            # therefore prevented without any additional logic.
             resolved = Path(str(path)).expanduser().resolve()
         except (ValueError, RuntimeError) as exc:
             return False, f"Path resolution failed: {exc}"

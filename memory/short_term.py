@@ -88,6 +88,11 @@ class ConversationBuffer:
                 break
             self._messages.pop(0)
 
+        # Drop any leading orphaned assistant/tool messages so the buffer
+        # always starts with a USER message (keeps turn pairs intact).
+        while self._messages and self._messages[0].role != Role.USER:
+            self._messages.pop(0)
+
     def add_user(self, content: str) -> None:
         self.add(Message.user(content))
 

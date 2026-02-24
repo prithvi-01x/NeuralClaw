@@ -6,27 +6,23 @@ The heart of NeuralClaw. Implements the observe → think → act → reflect lo
 For each user turn the orchestrator:
     1. Builds LLM context  (ContextBuilder)
     2. Calls the LLM       (BaseLLMClient)
-    3. Dispatches tool calls (ToolBus) — in parallel where safe
-    4. Feeds results back to LLM, repeats until no more tool calls
-    5. Persists the turn to memory
+    3. Dispatches tool calls (Executor → SkillBus) — in parallel where safe
+    4. Feeds results back to LLM, repeats until a termination condition is met
+    5. Reflects and persists the turn to memory (Reflector)
 
-Autonomous mode (run_autonomous) additionally uses the Planner to decompose
-a goal into steps and drives the loop step-by-step.
-
-Fixes applied:
-  - LLMInvalidRequestError is now caught explicitly in _agent_loop and
-    surfaces a clear, user-readable error panel instead of a raw exception
-    traceback. This is hit when using Bytez (no tool support) with tools
-    registered — the agent now gracefully informs the user rather than
-    crashing.
-  - Autonomous step errors are now yielded as proper ERROR responses so the
-    user sees them in the UI, not just in the log.
+Phase 3 hardening:
+  - run_turn() now returns TurnResult(status, response, steps_taken, duration_ms)
+  - _agent_loop() NEVER raises — every code path returns a TurnResult
+  - All termination conditions are explicit: SUCCESS, ITER_LIMIT, TIMEOUT,
+    BLOCKED, CONTEXT_LIMIT, ERROR
+  - Executor and Reflector extracted as separate, independently testable classes
 
 Usage:
     orc = Orchestrator(llm, config, bus, registry, memory)
-    response = await orc.run_turn(session, "What files are in ~/projects?")
+    turn = await orc.run_turn(session, "What files are in ~/projects?")
+    print(turn.status, turn.response.text)
 
-    async for update in orc.run_autonomous(session, "Research WebGPU and write a report"):
+    async for update in orc.run_autonomous(session, "Research WebGPU"):
         print(update.text)
 """
 
@@ -34,10 +30,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
+from enum import Enum
 from typing import Callable, Optional
 
-from brain.llm_client import BaseLLMClient, LLMInvalidRequestError
+from brain.llm_client import BaseLLMClient, LLMContextError, LLMInvalidRequestError
 from brain.types import (
     LLMConfig, LLMResponse, Message, Role,
     ToolCall as BrainToolCall,
@@ -46,15 +44,20 @@ from brain.types import (
 )
 from memory.memory_manager import MemoryManager
 from observability.logger import bind_session, clear_session, get_logger
-from tools.tool_bus import ToolBus
-from tools.tool_registry import ToolRegistry
-from tools.types import RiskLevel, ToolCall, ToolResult, TrustLevel
+from observability.trace import TraceContext
+from skills.bus import SkillBus
+from skills.registry import SkillRegistry
+from skills.types import RiskLevel, TrustLevel
 
 from agent.context_builder import ContextBuilder
+from agent.executor import Executor
 from agent.planner import Planner
 from agent.reasoner import Reasoner
+from agent.reflector import Reflector
 from agent.response_synthesizer import AgentResponse, ResponseKind, ResponseSynthesizer
 from agent.session import ActivePlan, PlanStep, Session
+from exceptions import NeuralClawError, PlanError, IterationLimitError, LLMError, MemoryError
+from brain.capabilities import get_capabilities
 
 log = get_logger(__name__)
 
@@ -66,8 +69,100 @@ _REASON_THRESHOLD = RiskLevel.HIGH
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Fire-and-forget helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Module-level strong-reference set — prevents asyncio from GC-ing tasks mid-flight.
+# Tasks are /removed/ in the done-callback so the set never grows unbounded.
+_BG_TASKS: set[asyncio.Task] = set()
+
+
+def _fire_and_forget(coro, label: str = "bg_task") -> asyncio.Task:
+    """
+    Schedule a coroutine as a background asyncio task.
+
+    Unlike a bare asyncio.create_task(), this:
+      1. Holds a strong reference so the GC cannot cancel the task mid-flight.
+      2. Attaches a done-callback that logs any unhandled exception so failures
+         are never silently swallowed.
+      3. Removes the task from the reference set when complete (no unbounded growth).
+
+    The label is included in the log entry for easy grep-ability.
+    """
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)  # strong ref — prevents GC reaping
+
+    def _on_done(t: asyncio.Task) -> None:
+        _BG_TASKS.discard(t)  # release strong ref when finished
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            log.warning(
+                "bg_task.failed",
+                label=label,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+
+    task.add_done_callback(_on_done)
+    return task
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TurnStatus and TurnResult  (Phase 3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TurnStatus(str, Enum):
+    """
+    Every possible outcome of a single agent turn.
+    run_turn() always returns one of these — it never raises.
+    """
+    SUCCESS       = "success"        # LLM returned a final text response
+    ITER_LIMIT    = "iter_limit"     # max_iterations reached without final answer
+    TIMEOUT       = "timeout"        # max_turn_timeout_seconds elapsed
+    BLOCKED       = "blocked"        # safety kernel blocked a critical step
+    CONTEXT_LIMIT = "context_limit"  # LLMContextError: input exceeded model limit
+    ERROR         = "error"          # Unhandled exception in skill or LLM
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    """
+    Typed result from a single agent turn. Always returned — never raises.
+
+    Fields:
+        status:      What happened.
+        response:    The AgentResponse to display to the user.
+        steps_taken: Number of tool calls executed in this turn.
+        duration_ms: Wall-clock time for the full turn in milliseconds.
+    """
+    status: TurnStatus
+    response: AgentResponse
+    steps_taken: int = 0
+    duration_ms: float = 0.0
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == TurnStatus.SUCCESS
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Capability helpers (module-level so they can be used inside _agent_loop)
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _make_legacy_error(tool_call_id: str, name: str, error: str) -> "SkillResult":
+    """Return a SkillResult representing a failed/blocked call."""
+    from skills.types import SkillResult
+    return SkillResult.fail(
+        skill_name=name,
+        skill_call_id=tool_call_id,
+        error=error,
+        error_type="ExecutorError",
+        blocked=True,
+    )
+
 
 _TOOL_ERROR_PHRASES = (
     "does not support tools",
@@ -86,11 +181,27 @@ def _is_tool_error(err_lower: str) -> bool:
 
 
 def _provider_name_from_client(client) -> str:
-    """Derive provider name string from a client instance."""
+    """Return the provider name for the given client.
+
+    Prefers the typed ``provider_name`` property introduced in Phase 6.
+    Falls back to class-name string matching for any third-party subclass
+    that hasn't been updated yet — guarantees backward compatibility.
+    """
     from brain.llm_client import ResilientLLMClient
     actual = client
     if isinstance(client, ResilientLLMClient):
-        actual = client.primary
+        actual = client._primary
+
+    # Fast path — typed property (all first-party clients implement this)
+    if hasattr(actual, "provider_name"):
+        try:
+            name = actual.provider_name
+            if isinstance(name, str) and name:
+                return name
+        except AttributeError:
+            pass
+
+    # Fallback — class-name heuristic for third-party/unported subclasses
     cls_name = type(actual).__name__.lower()
     if "openai" in cls_name:
         return "openai"
@@ -140,11 +251,12 @@ class Orchestrator:
         self,
         llm_client: BaseLLMClient,
         llm_config: LLMConfig,
-        tool_bus: ToolBus,
-        tool_registry: ToolRegistry,
+        tool_bus: SkillBus,
+        tool_registry: SkillRegistry,
         memory_manager: MemoryManager,
         agent_name: str = "NeuralClaw",
         max_iterations: int = _MAX_ITER,
+        max_turn_timeout: int = 300,
         on_response: Optional[Callable[[AgentResponse], None]] = None,
     ):
         self._llm = llm_client
@@ -154,15 +266,30 @@ class Orchestrator:
         self._memory = memory_manager
         self._agent_name = agent_name
         self._max_iter = max_iterations
-        self._on_response = on_response   # streaming callback for the interface
+        self._max_turn_timeout = max_turn_timeout
+        self._on_response = on_response
 
         self._ctx = ContextBuilder(memory_manager=memory_manager, agent_name=agent_name)
         self._synth = ResponseSynthesizer()
         self._planner = Planner(llm_client=llm_client, llm_config=llm_config)
         self._reasoner = Reasoner(llm_client=llm_client, llm_config=llm_config)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Model hot-swap
+        # Phase 3: Executor and Reflector as separate objects
+        self._executor = Executor(
+            registry=tool_registry,
+            bus=tool_bus,
+            reasoner=self._reasoner,
+            memory_manager=memory_manager,
+        )
+        self._reflector = Reflector(
+            reasoner=self._reasoner,
+            memory_manager=memory_manager,
+        )
+
+        # Cache for tool schemas — built once from the registry at startup and
+        # on model swap. The registry is read-only after init, so rebuilding
+        # on every _agent_loop call is wasteful with many skills.
+        self._cached_tool_schemas: list[BrainToolSchema] | None = None
     # ─────────────────────────────────────────────────────────────────────────
 
     def swap_llm_client(self, new_client: BaseLLMClient, new_model_id: str = "") -> None:
@@ -181,15 +308,35 @@ class Orchestrator:
         if new_model_id and hasattr(self, "_config"):
             self._config.model = new_model_id
 
+        # Propagate to sub-components via a safe helper.
+        # Using a named helper (instead of raw hasattr chains) means a rename
+        # of an internal attribute produces a log warning rather than a silent skip.
+        _SENTINEL = object()
+
+        def _set_model(obj, attr: str, value: str) -> None:
+            cfg = getattr(obj, attr, _SENTINEL)
+            if cfg is _SENTINEL:
+                return  # attribute doesn't exist on this object — OK
+            if hasattr(cfg, "model"):
+                cfg.model = value
+            else:
+                log.warning(
+                    "orchestrator.swap_model_attr_unexpected",
+                    obj=type(obj).__name__,
+                    attr=attr,
+                    cfg_type=type(cfg).__name__,
+                )
+
         if hasattr(self._planner, "_llm"):
             self._planner._llm = new_client
-        if new_model_id and hasattr(self._planner, "_config"):
-            self._planner._config.model = new_model_id
+        if new_model_id:
+            _set_model(self._planner, "_config", new_model_id)
 
         if hasattr(self._reasoner, "_llm"):
             self._reasoner._llm = new_client
-        if new_model_id and hasattr(self._reasoner, "_config"):
-            self._reasoner._config.model = new_model_id
+        if new_model_id:
+            _set_model(self._reasoner, "_config", new_model_id)
+            _set_model(self._reasoner, "_reflect_config", new_model_id)
 
         # Refresh OllamaClient's per-instance capability flags for the new model
         if new_model_id and hasattr(new_client, "_refresh_capabilities"):
@@ -215,15 +362,21 @@ class Orchestrator:
             new_model=new_model_id or "same",
             supports_tools=getattr(new_client, "supports_tools", True),
         )
+        # Invalidate schema cache — the new model may have different tool support
+        self._cached_tool_schemas = None
 
 
 
-    async def run_turn(self, session: Session, user_message: str) -> AgentResponse:
+    async def run_turn(self, session: Session, user_message: str) -> TurnResult:
         """
-        Process one user message and return the final AgentResponse.
-        Entry point for interactive (/ask) mode.
+        Process one user message and return a TurnResult.
+
+        NEVER raises — every code path returns a TurnResult with an explicit
+        TurnStatus. Entry point for interactive (/ask) mode.
         """
         bind_session(session.id, session.user_id)
+        _trace = TraceContext.for_session(session.id)
+        _trace.new_turn().bind()
         session.reset_cancel()
 
         log.info("orchestrator.turn_start", session_id=session.id,
@@ -232,23 +385,65 @@ class Orchestrator:
 
         try:
             session.add_user_message(user_message)
-            final = await self._agent_loop(session, user_message)
-            session.add_assistant_message(final.text)
+
+            # Wrap in a timeout so the loop can never hang forever
+            try:
+                turn_result = await asyncio.wait_for(
+                    self._agent_loop(session, user_message),
+                    timeout=self._max_turn_timeout,
+                )
+            except asyncio.TimeoutError:
+                log.warning("orchestrator.turn_timeout", session_id=session.id,
+                            timeout=self._max_turn_timeout)
+                response = self._synth.error(
+                    f"Turn timed out after {self._max_turn_timeout}s.",
+                    detail="The task was too slow to complete. Try a simpler request.",
+                )
+                turn_result = TurnResult(
+                    status=TurnStatus.TIMEOUT,
+                    response=response,
+                    steps_taken=session.tool_call_count,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                )
+
+            session.add_assistant_message(turn_result.response.text)
 
             # Persist turn to long-term memory (fire-and-forget)
-            asyncio.create_task(self._persist_turn(session, user_message, final.text))
+            _fire_and_forget(
+                self._persist_turn(session, user_message, turn_result.response.text),
+                label="persist_turn",
+            )
 
-            log.info("orchestrator.turn_done", session_id=session.id,
-                     ms=round((time.monotonic() - t0) * 1000),
-                     tool_calls=session.tool_call_count)
-            return final
+            log.info(
+                "orchestrator.turn_done",
+                session_id=session.id,
+                status=turn_result.status.value,
+                ms=round(turn_result.duration_ms),
+                tool_calls=turn_result.steps_taken,
+            )
+            return turn_result
 
         except asyncio.CancelledError:
             log.info("orchestrator.turn_cancelled", session_id=session.id)
-            return self._synth.cancelled()
-        except Exception as e:
-            log.error("orchestrator.turn_error", error=str(e), exc_info=True)
-            return self._synth.error(type(e).__name__, detail=str(e))
+            return TurnResult(
+                status=TurnStatus.ERROR,
+                response=self._synth.cancelled(),
+                duration_ms=(time.monotonic() - t0) * 1000,
+            )
+        except NeuralClawError as e:
+            log.error("orchestrator.turn_error", error=str(e), error_type=type(e).__name__, exc_info=True)
+            return TurnResult(
+                status=TurnStatus.ERROR,
+                response=self._synth.error(type(e).__name__, detail=str(e)),
+                duration_ms=(time.monotonic() - t0) * 1000,
+            )
+        except BaseException as e:
+            log.error("orchestrator.turn_unexpected_error", error=str(e), error_type=type(e).__name__, exc_info=True)
+            return TurnResult(
+                status=TurnStatus.ERROR,
+                response=self._synth.error(type(e).__name__, detail=str(e)),
+                duration_ms=(time.monotonic() - t0) * 1000,
+            )
         finally:
             clear_session()
 
@@ -264,6 +459,8 @@ class Orchestrator:
         Yields AgentResponse objects so the interface can stream progress.
         """
         bind_session(session.id, session.user_id)
+        _trace = TraceContext.for_session(session.id)
+        _trace.new_turn().bind()
         session.reset_cancel()
         log.info("orchestrator.autonomous_start", goal=goal[:100])
 
@@ -282,11 +479,18 @@ class Orchestrator:
             # 2. Register episode + plan on session
             episode_id = await self._memory.start_episode(session.id, goal)
             session.set_plan(goal, plan_result.steps, episode_id=episode_id)
+
+            # Phase 4: Create TaskMemory for this plan (tracked inside the store)
+            plan_id = session.active_plan.id if session.active_plan else f"plan_{episode_id}"
+            self._memory.task_create(plan_id=plan_id, goal=goal)
+
             yield self._synth.plan_preview(goal, plan_result.steps)
 
             # 3. Execute each step
             steps_taken: list[str] = []
             plan = session.active_plan
+            _MAX_RECOVERY_DEPTH = 3  # max consecutive recovery attempts per step
+            _recovery_depth = 0       # resets to 0 whenever a step succeeds
 
             while plan and not plan.is_complete:
                 if session.is_cancelled():
@@ -313,27 +517,59 @@ class Orchestrator:
                 )
 
                 try:
-                    step_response = await self._agent_loop(session, step_prompt)
-                    step.result_summary = step_response.text[:200]
+                    # Phase 4: log step start in TaskMemory
+                    self._memory.task_log_step(
+                        plan_id=plan_id,
+                        step_id=f"step_{step.index}",
+                        description=step.description,
+                    )
+                    step_turn = await self.run_turn(session, step_prompt)
+                    # Phase 4: record result in TaskMemory
+                    self._memory.task_update_result(
+                        plan_id=plan_id,
+                        step_id=f"step_{step.index}",
+                        result_content=step_turn.response.text[:300],
+                        is_error=not step_turn.succeeded,
+                        duration_ms=step_turn.duration_ms,
+                    )
+                    step.result_summary = step_turn.response.text[:200]
                     steps_taken.append(
                         f"Step {step.index + 1}: {step.description} "
-                        f"→ {step_response.text[:100]}"
+                        f"→ {step_turn.response.text[:100]}"
                     )
                     plan.advance()
+                    _recovery_depth = 0  # successful step resets recovery counter
 
-                    if len(step_response.text.strip()) > 80:
-                        yield step_response
+                    if len(step_turn.response.text.strip()) > 80:
+                        yield step_turn.response
 
-                except Exception as step_err:
+                except NeuralClawError as step_err:
                     step.error = str(step_err)
                     log.warning("orchestrator.step_failed", step=step.description[:80],
-                                error=str(step_err))
+                                error=str(step_err), error_type=type(step_err).__name__)
+                except BaseException as step_err:
+                    step.error = str(step_err)
+                    log.error("orchestrator.step_unexpected_error", step=step.description[:80],
+                              error=str(step_err), error_type=type(step_err).__name__, exc_info=True)
 
-                    # Yield the error so the user sees it in the UI
                     yield self._synth.error(
                         f"Step {step.index + 1} encountered an error",
                         detail=str(step_err),
                     )
+
+                    # Enforce maximum consecutive recovery depth
+                    if _recovery_depth >= _MAX_RECOVERY_DEPTH:
+                        log.warning(
+                            "orchestrator.recovery_depth_exceeded",
+                            step=step.description[:80],
+                            max_depth=_MAX_RECOVERY_DEPTH,
+                        )
+                        yield self._synth.error(
+                            f"Step {step.index + 1} failed after {_MAX_RECOVERY_DEPTH} "
+                            "recovery attempts. Stopping autonomous execution.",
+                            detail=str(step_err),
+                        )
+                        break
 
                     recovery = await self._planner.create_recovery(
                         goal=goal,
@@ -346,14 +582,18 @@ class Orchestrator:
                     )
 
                     if recovery.can_recover and recovery.recovery_steps:
+                        _recovery_depth += 1
                         insert_at = plan.current_step_index + 1
-                        for i, rdesc in enumerate(recovery.recovery_steps):
-                            new_step = PlanStep(
+                        # Insert all recovery steps at once, then do a single O(n)
+                        # re-index pass (avoids O(n²) re-index inside the loop).
+                        new_steps = [
+                            PlanStep(
                                 index=insert_at + i,
                                 description=f"[Recovery] {rdesc}",
                             )
-                            plan.steps.insert(insert_at + i, new_step)
-                        # Renumber every step so indices match position
+                            for i, rdesc in enumerate(recovery.recovery_steps)
+                        ]
+                        plan.steps[insert_at:insert_at] = new_steps
                         for j, s in enumerate(plan.steps):
                             s.index = j
                         if recovery.skip_failed_step:
@@ -370,25 +610,21 @@ class Orchestrator:
                         )
                         break
 
-            # 4. Reflect + commit episode
+            # 4. Reflect + commit episode via Reflector
             if steps_taken and not session.is_cancelled():
                 outcome = "success" if (plan and plan.is_complete) else "partial"
-                lesson = await self._reasoner.reflect(
-                    goal=goal, steps_taken=steps_taken, outcome=outcome
+                await self._reflector.commit(
+                    session=session,
+                    steps_taken=steps_taken,
+                    goal=goal,
+                    outcome=outcome,
                 )
-                if lesson:
-                    await self._memory.add_reflection(session.id, lesson, context=goal)
 
-                episode_id = plan.episode_id if plan else None
-                if episode_id:
-                    await self._memory.commit_episode(
-                        episode_id=episode_id,
-                        outcome=outcome,
-                        summary=f"{outcome.capitalize()}: {goal}",
-                        steps=steps_taken,
-                        tool_count=session.tool_call_count,
-                        turn_count=session.turn_count,
-                    )
+            # Phase 4: close or fail TaskMemory
+            if plan and plan.is_complete:
+                self._memory.task_close(plan_id)
+            else:
+                self._memory.task_fail(plan_id, reason="Plan did not complete")
 
             if plan and plan.is_complete:
                 yield AgentResponse(
@@ -404,8 +640,11 @@ class Orchestrator:
 
         except asyncio.CancelledError:
             yield self._synth.cancelled()
-        except Exception as e:
-            log.error("orchestrator.autonomous_error", error=str(e), exc_info=True)
+        except NeuralClawError as e:
+            log.error("orchestrator.autonomous_error", error=str(e), error_type=type(e).__name__, exc_info=True)
+            yield self._synth.error(type(e).__name__, detail=str(e))
+        except BaseException as e:
+            log.error("orchestrator.autonomous_unexpected_error", error=str(e), error_type=type(e).__name__, exc_info=True)
             yield self._synth.error(type(e).__name__, detail=str(e))
         finally:
             clear_session()
@@ -414,37 +653,45 @@ class Orchestrator:
     # Inner agent loop
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def _agent_loop(self, session: Session, user_message: str) -> AgentResponse:
+    async def _agent_loop(self, session: Session, user_message: str) -> TurnResult:
         """
         Core observe → think → act loop.
 
-        Capability-aware: checks whether the active LLM supports tool calling
-        before building schemas.  If the LLM rejects tools at runtime, auto-
-        retries in chat-only mode and notifies the user once via on_response.
+        Returns a TurnResult with an explicit TurnStatus for EVERY possible
+        exit path. Never raises — all exceptions are caught and wrapped.
 
-        Iterates until the LLM produces a final text response (no tool calls)
-        or until _max_iter is reached.
+        Termination conditions (exhaustive):
+          SUCCESS       — LLM returned text with no tool calls
+          ITER_LIMIT    — max_iterations reached without a final answer
+          TIMEOUT       — handled by run_turn()'s wait_for wrapper
+          BLOCKED       — safety kernel blocked a HIGH/CRITICAL step and
+                          the LLM has no remaining viable actions
+          CONTEXT_LIMIT — LLMContextError raised (input too long)
+          ERROR         — unhandled exception in LLM call or skill dispatch
         """
-        from brain.capabilities import get_capabilities
+        t0 = time.monotonic()
+        steps_taken = 0
 
         # ── Determine tool support ────────────────────────────────────────────
-        # Layer 1: client flag (set by OllamaClient per-model, Bytez always False)
         _client_supports = getattr(self._llm, "supports_tools", True)
-        # Layer 2: capability registry keyed on (provider, model_id)
         _registry_caps = get_capabilities(
             _provider_name_from_client(self._llm),
             self._config.model,
         )
         _supports_tools = _client_supports and _registry_caps.supports_tools
 
-        all_tool_schemas: list[BrainToolSchema] = [
-            BrainToolSchema(
-                name=s.name,
-                description=s.description,
-                parameters=s.parameters,
-            )
-            for s in self._registry.list_schemas(enabled_only=True)
-        ]
+        # Build (or reuse cached) tool schema list — registry is static after
+        # startup so we rebuild only when the cache is cold or after a model swap.
+        if self._cached_tool_schemas is None:
+            self._cached_tool_schemas = [
+                BrainToolSchema(
+                    name=s.name,
+                    description=s.description,
+                    parameters=s.parameters,
+                )
+                for s in self._registry.list_schemas(enabled_only=True)
+            ]
+        all_tool_schemas = self._cached_tool_schemas
         llm_tools: list[BrainToolSchema] = all_tool_schemas if _supports_tools else []
 
         if not _supports_tools:
@@ -456,13 +703,16 @@ class Orchestrator:
 
         # ── Build message context ─────────────────────────────────────────────
         messages = await self._ctx.build(session=session, user_message=user_message)
-
-        # Track whether we have already notified the user about chat-only mode
         _chat_only_notified = not _supports_tools
 
         for iteration in range(self._max_iter):
             if session.is_cancelled():
-                raise asyncio.CancelledError()
+                return TurnResult(
+                    status=TurnStatus.ERROR,
+                    response=self._synth.cancelled(),
+                    steps_taken=steps_taken,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                )
 
             log.debug("orchestrator.llm_call", iteration=iteration,
                       msg_count=len(messages), tools_enabled=bool(llm_tools))
@@ -474,15 +724,22 @@ class Orchestrator:
                     config=self._config,
                     tools=llm_tools or None,
                 )
+            except LLMContextError as e:
+                log.warning("orchestrator.context_limit", error=str(e))
+                return TurnResult(
+                    status=TurnStatus.CONTEXT_LIMIT,
+                    response=self._synth.error(
+                        "Context limit reached",
+                        detail="The conversation is too long. Use /compact to summarise it.",
+                    ),
+                    steps_taken=steps_taken,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                )
             except LLMInvalidRequestError as e:
                 err_lower = str(e).lower()
-                # Auto-recover: if error is tool-related, retry without tools
                 if llm_tools and _is_tool_error(err_lower):
-                    log.warning(
-                        "orchestrator.tool_error_fallback",
-                        model=self._config.model,
-                        error=str(e),
-                    )
+                    log.warning("orchestrator.tool_error_fallback",
+                                model=self._config.model, error=str(e))
                     llm_tools = []
                     _supports_tools = False
                     _register_no_tools(self._llm, self._config.model)
@@ -492,38 +749,80 @@ class Orchestrator:
                             "Running in chat-only mode."
                         ))
                         _chat_only_notified = True
-                    # Retry same iteration without tools
-                    llm_resp = await self._llm.generate(
-                        messages=messages,
-                        config=self._config,
-                        tools=None,
-                    )
+                    try:
+                        llm_resp = await self._llm.generate(
+                            messages=messages,
+                            config=self._config,
+                            tools=None,
+                        )
+                    except (NeuralClawError, LLMError, Exception) as retry_err:
+                        log.error("orchestrator.llm_retry_failed", error=str(retry_err), error_type=type(retry_err).__name__)
+                        return TurnResult(
+                            status=TurnStatus.ERROR,
+                            response=self._synth.error(
+                                "Provider limitation", detail=str(retry_err)
+                            ),
+                            steps_taken=steps_taken,
+                            duration_ms=(time.monotonic() - t0) * 1000,
+                        )
                 else:
                     log.warning("orchestrator.llm_invalid_request", error=str(e))
-                    return self._synth.error("Provider limitation", detail=str(e))
+                    return TurnResult(
+                        status=TurnStatus.ERROR,
+                        response=self._synth.error("Provider limitation", detail=str(e)),
+                        steps_taken=steps_taken,
+                        duration_ms=(time.monotonic() - t0) * 1000,
+                    )
+            except (NeuralClawError, LLMError, BaseException) as e:
+                log.error("orchestrator.llm_error", error=str(e), error_type=type(e).__name__, exc_info=True)
+                return TurnResult(
+                    status=TurnStatus.ERROR,
+                    response=self._synth.error(type(e).__name__, detail=str(e)),
+                    steps_taken=steps_taken,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                )
 
             session.record_token_usage(
                 llm_resp.usage.input_tokens,
                 llm_resp.usage.output_tokens,
             )
 
-            # ── No tool calls → done ──────────────────────────────────────────
+            # ── No tool calls → SUCCESS ───────────────────────────────────────
             if not llm_resp.has_tool_calls:
-                return self._synth.from_llm(llm_resp)
+                return TurnResult(
+                    status=TurnStatus.SUCCESS,
+                    response=self._synth.from_llm(llm_resp),
+                    steps_taken=steps_taken,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                )
 
-            # ── Tool calls → append assistant message with tool_calls field ───
+            # ── Tool calls → execute ──────────────────────────────────────────
             messages.append(Message(
                 role=Role.ASSISTANT,
                 content=llm_resp.content,
                 tool_calls=llm_resp.tool_calls,
             ))
 
-            # ── Execute tool calls (parallel where safe) ──────────────────────
-            tool_results: list[ToolResult] = await self._execute_tool_calls(
+            tool_results, blocked = await self._execute_tool_calls(
                 llm_resp.tool_calls, session
             )
+            steps_taken += len(tool_results)
 
-            # ── Append tool results to messages ───────────────────────────────
+            # If a critical step was hard-blocked → BLOCKED status
+            if blocked:
+                log.warning("orchestrator.critical_step_blocked",
+                            session_id=session.id)
+                return TurnResult(
+                    status=TurnStatus.BLOCKED,
+                    response=self._synth.error(
+                        "A required action was blocked by the safety kernel.",
+                        detail="Increase trust level or remove the restricted action.",
+                    ),
+                    steps_taken=steps_taken,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                )
+
+            # Append tool results to messages
             for brain_tc, result in zip(llm_resp.tool_calls, tool_results):
                 brain_tr = BrainToolResult(
                     tool_call_id=brain_tc.id,
@@ -533,18 +832,23 @@ class Orchestrator:
                 )
                 messages.append(Message.tool_response(brain_tr))
 
-                # Stream individual tool result to interface if callback set
                 if self._on_response:
                     resp = (self._synth.tool_error(result)
                             if result.is_error
                             else self._synth.tool_success(result))
                     self._on_response(resp)
 
-        log.warning("orchestrator.max_iter_reached", session_id=session.id,
-                    iterations=self._max_iter)
-        return self._synth.error(
-            f"Reached maximum iterations ({self._max_iter}). "
-            "Task may be too complex for a single turn."
+        # ── Exhausted all iterations → ITER_LIMIT ────────────────────────────
+        log.warning("orchestrator.max_iter_reached",
+                    session_id=session.id, iterations=self._max_iter)
+        return TurnResult(
+            status=TurnStatus.ITER_LIMIT,
+            response=self._synth.error(
+                f"Reached maximum iterations ({self._max_iter}).",
+                detail="Task may be too complex. Try breaking it into smaller steps.",
+            ),
+            steps_taken=steps_taken,
+            duration_ms=(time.monotonic() - t0) * 1000,
         )
     # ─────────────────────────────────────────────────────────────────────────
     # Tool execution
@@ -554,117 +858,60 @@ class Orchestrator:
         self,
         brain_tool_calls: list[BrainToolCall],
         session: Session,
-    ) -> list[ToolResult]:
+    ) -> tuple[list, bool]:
         """
-        Execute a list of tool calls.
+        Execute a list of tool calls via the Executor.
         LOW/MEDIUM risk → parallel. HIGH/CRITICAL → sequential.
 
-        Bug 7 fix: results were returned as low_results + high_results, which
-        reorders them relative to brain_tool_calls.  The caller zips results
-        with llm_resp.tool_calls positionally, so a mixed list (e.g. [low,
-        high, low]) caused tool_call_id ↔ result mismatches and fed wrong
-        results back to the LLM.  We now collect results into a pre-sized list
-        indexed by original position so order is always preserved.
+        Returns:
+            (results, blocked) where blocked=True signals a critical step
+            was hard-blocked by the safety kernel and the loop should halt.
+
+        Preserves result ordering relative to brain_tool_calls (indexed insert).
         """
         low: list[tuple[int, BrainToolCall]] = []
         high: list[tuple[int, BrainToolCall]] = []
 
+        # Guard: nothing to do
+        if not brain_tool_calls:
+            return [], False
+
         for idx, btc in enumerate(brain_tool_calls):
-            schema = self._registry.get_schema(btc.name)
-            risk = schema.risk_level if schema else RiskLevel.MEDIUM
+            manifest = self._registry.get_schema(btc.name)
+            risk = manifest.risk_level if manifest else RiskLevel.MEDIUM
             (high if risk >= RiskLevel.HIGH else low).append((idx, btc))
 
-        # Pre-allocate results list so we can insert by original index
-        results: list[ToolResult | None] = [None] * len(brain_tool_calls)
+        results: list = [None] * len(brain_tool_calls)
+        blocked = False
 
         if low:
-            tasks = [self._dispatch_one(btc, session) for _, btc in low]
+            tasks = [
+                self._executor.dispatch(btc, session, self._on_response)
+                for _, btc in low
+            ]
             parallel = await asyncio.gather(*tasks, return_exceptions=True)
             for (idx, btc), r in zip(low, parallel):
                 if isinstance(r, Exception):
-                    results[idx] = ToolResult.error(btc.id, btc.name, str(r))
+                    results[idx] = _make_legacy_error(btc.id, btc.name, str(r))
                 else:
                     results[idx] = r
 
         for idx, btc in high:
             if session.is_cancelled():
-                results[idx] = ToolResult.error(btc.id, btc.name, "Cancelled.")
+                results[idx] = _make_legacy_error(btc.id, btc.name, "Cancelled.")
                 continue
-            results[idx] = await self._dispatch_one(btc, session)
+            result = await self._executor.dispatch(btc, session, self._on_response)
+            results[idx] = result
 
-        # All slots must be filled
+            # Detect hard block — typed check on result.blocked, no string sniffing
+            if result.is_error and getattr(result, "blocked", False):
+                blocked = True
+
         unfilled = [i for i, r in enumerate(results) if r is None]
         if unfilled:
             raise RuntimeError(f"BUG: unfilled tool result slots at indices {unfilled}")
-        return results  # type: ignore[return-value]
 
-    async def _dispatch_one(self, btc: BrainToolCall, session: Session) -> ToolResult:
-        """
-        Dispatch a single tool call:
-          1. Optional reasoner pre-check for high-risk calls
-          2. Wire confirmation callback into session
-          3. Call ToolBus.dispatch()
-          4. Record to episodic memory
-        """
-        schema = self._registry.get_schema(btc.name)
-
-        # Optional reasoner pre-check
-        if schema and schema.risk_level >= _REASON_THRESHOLD:
-            verdict = await self._reasoner.evaluate_tool_call(
-                tool_name=btc.name,
-                tool_args=btc.arguments,
-                goal=session.active_plan.goal if session.active_plan else "user request",
-                step=(session.active_plan.current_step.description
-                      if session.active_plan and session.active_plan.current_step else ""),
-            )
-            if not verdict.proceed:
-                log.warning("orchestrator.reasoner_blocked", tool=btc.name,
-                            concern=verdict.concern)
-                return ToolResult.error(
-                    btc.id, btc.name,
-                    f"Reasoner blocked: {verdict.concern or verdict.reasoning}",
-                    risk_level=schema.risk_level,
-                )
-
-        # Wire confirmation through session future
-        async def _on_confirm(decision) -> bool:
-            future = session.register_confirmation(decision.tool_call_id)
-            if self._on_response:
-                self._on_response(
-                    self._synth.confirmation_request(decision, btc.arguments)
-                )
-            try:
-                return await asyncio.wait_for(future, timeout=120.0)
-            except asyncio.TimeoutError:
-                log.warning("orchestrator.confirm_timeout",
-                            tool_call_id=decision.tool_call_id)
-                session._pending_confirmations.pop(decision.tool_call_id, None)
-                return False
-
-        # Convert brain ToolCall → tools ToolCall for the bus
-        tool_call = ToolCall(id=btc.id, name=btc.name, arguments=btc.arguments)
-
-        result = await self._bus.dispatch(
-            tool_call,
-            trust_level=session.trust_level,
-            on_confirm_needed=_on_confirm,
-        )
-
-        session.record_tool_call()
-
-        # Record to episodic memory (fire-and-forget)
-        asyncio.create_task(self._memory.record_tool_call(
-            session_id=session.id,
-            tool_name=btc.name,
-            arguments=btc.arguments,
-            result=result.content[:500],
-            is_error=result.is_error,
-            risk_level=result.risk_level.value,
-            duration_ms=result.duration_ms,
-            episode_id=session.active_plan.episode_id if session.active_plan else None,
-        ))
-
-        return result
+        return results, blocked  # type: ignore[return-value]
 
     # ─────────────────────────────────────────────────────────────────────────
     # Compaction
@@ -691,7 +938,7 @@ class Orchestrator:
         )
 
         # Persist to long-term memory (fire-and-forget)
-        asyncio.create_task(self._memory.store(
+        _fire_and_forget(self._memory.store(
             f"[Compact summary] {summary}",
             collection="conversations",
             metadata={
@@ -700,7 +947,7 @@ class Orchestrator:
                 "type":       "compact_summary",
                 "turn":       session.turn_count,
             },
-        ))
+        ), label="compact_summary_store")
 
         log.info(
             "orchestrator.session_compacted",
@@ -726,8 +973,8 @@ class Orchestrator:
                     "turn": session.turn_count,
                 },
             )
-        except Exception as e:
-            log.warning("orchestrator.persist_failed", error=str(e))
+        except (NeuralClawError, MemoryError, OSError) as e:
+            log.warning("orchestrator.persist_failed", error=str(e), error_type=type(e).__name__)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Factory
@@ -738,8 +985,8 @@ class Orchestrator:
         cls,
         settings,
         llm_client: BaseLLMClient,
-        tool_bus: ToolBus,
-        tool_registry: ToolRegistry,
+        tool_bus: SkillBus,
+        tool_registry: SkillRegistry,
         memory_manager: MemoryManager,
         on_response: Optional[Callable[[AgentResponse], None]] = None,
     ) -> "Orchestrator":
@@ -757,5 +1004,6 @@ class Orchestrator:
             memory_manager=memory_manager,
             agent_name=settings.agent.name,
             max_iterations=settings.agent.max_iterations_per_turn,
+            max_turn_timeout=settings.agent.max_turn_timeout_seconds,
             on_response=on_response,
         )

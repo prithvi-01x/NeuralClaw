@@ -15,13 +15,14 @@ import pytest
 from safety.safety_kernel import SafetyKernel
 from safety.whitelist import check_command, check_path
 from safety.risk_scorer import score_tool_call
-from tools.types import (
+from skills.types import (
     RiskLevel,
     SafetyStatus,
-    ToolCall,
-    ToolSchema,
+    SkillCall,
+    SkillManifest,
     TrustLevel,
 )
+from safety.risk_scorer import score_tool_call
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -36,50 +37,58 @@ def kernel():
 
 @pytest.fixture
 def terminal_schema():
-    return ToolSchema(
+    return SkillManifest(
         name="terminal_exec",
+        version="1.0.0",
         description="Run a command",
         category="terminal",
         risk_level=RiskLevel.HIGH,
-        parameters={"type": "object", "properties": {}, "required": []},
+        capabilities=frozenset({"shell:run"}),
+        parameters={"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
     )
 
 
 @pytest.fixture
 def filesystem_schema():
-    return ToolSchema(
+    return SkillManifest(
         name="file_read",
+        version="1.0.0",
         description="Read a file",
         category="filesystem",
         risk_level=RiskLevel.LOW,
-        parameters={"type": "object", "properties": {}, "required": []},
+        capabilities=frozenset({"fs:read"}),
+        parameters={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
     )
 
 
 @pytest.fixture
 def write_schema():
-    return ToolSchema(
+    return SkillManifest(
         name="file_write",
+        version="1.0.0",
         description="Write a file",
         category="filesystem",
         risk_level=RiskLevel.MEDIUM,
-        parameters={"type": "object", "properties": {}, "required": []},
+        capabilities=frozenset({"fs:write"}),
+        parameters={"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
     )
 
 
 @pytest.fixture
 def search_schema():
-    return ToolSchema(
+    return SkillManifest(
         name="web_search",
+        version="1.0.0",
         description="Search the web",
         category="search",
         risk_level=RiskLevel.LOW,
-        parameters={"type": "object", "properties": {}, "required": []},
+        capabilities=frozenset({"net:fetch"}),
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
     )
 
 
-def make_call(name: str, args: dict, call_id: str = "call_test_1") -> ToolCall:
-    return ToolCall(id=call_id, name=name, arguments=args)
+def make_call(name: str, args: dict, call_id: str = "call_test_1") -> SkillCall:
+    return SkillCall(id=call_id, skill_name=name, arguments=args)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,58 +278,71 @@ class TestRiskScorer:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# Capabilities granted to the test session — covers all fixture manifests.
+_ALL_CAPS = frozenset({"shell:run", "fs:read", "fs:write", "net:fetch"})
+
+
 class TestSafetyKernel:
 
     @pytest.mark.asyncio
     async def test_ls_approved_low_trust(self, kernel, terminal_schema):
         call = make_call("terminal_exec", {"command": "ls -la"})
-        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.LOW)
+        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.LOW, granted_capabilities=_ALL_CAPS)
         # ls is allowed, HIGH risk with LOW trust → needs confirmation
         assert decision.status == SafetyStatus.CONFIRM_NEEDED
 
     @pytest.mark.asyncio
     async def test_rm_rf_blocked(self, kernel, terminal_schema):
         call = make_call("terminal_exec", {"command": "rm -rf /"})
-        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.LOW)
+        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.LOW, granted_capabilities=_ALL_CAPS)
         assert decision.is_blocked
         assert "blocked" in decision.reason.lower() or "pattern" in decision.reason.lower()
 
     @pytest.mark.asyncio
     async def test_sudo_blocked(self, kernel, terminal_schema):
         call = make_call("terminal_exec", {"command": "sudo rm -rf /etc"})
-        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.LOW)
+        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.LOW, granted_capabilities=_ALL_CAPS)
         assert decision.is_blocked
 
     @pytest.mark.asyncio
     async def test_search_auto_approved_low_trust(self, kernel, search_schema):
         call = make_call("web_search", {"query": "python tutorials"})
-        decision = await kernel.evaluate(call, search_schema, TrustLevel.LOW)
+        decision = await kernel.evaluate(call, search_schema, TrustLevel.LOW, granted_capabilities=_ALL_CAPS)
         assert decision.is_approved
 
     @pytest.mark.asyncio
     async def test_file_read_approved_in_allowed_path(self, kernel, filesystem_schema):
         call = make_call("file_read", {"path": "~/agent_files/notes.txt"})
-        decision = await kernel.evaluate(call, filesystem_schema, TrustLevel.LOW)
+        decision = await kernel.evaluate(call, filesystem_schema, TrustLevel.LOW, granted_capabilities=_ALL_CAPS)
         assert decision.is_approved
 
     @pytest.mark.asyncio
     async def test_file_read_blocked_outside_allowed_path(self, kernel, filesystem_schema):
         call = make_call("file_read", {"path": "/etc/passwd"})
-        decision = await kernel.evaluate(call, filesystem_schema, TrustLevel.LOW)
+        decision = await kernel.evaluate(call, filesystem_schema, TrustLevel.LOW, granted_capabilities=_ALL_CAPS)
         assert decision.is_blocked
 
     @pytest.mark.asyncio
-    async def test_disabled_tool_blocked(self, kernel, search_schema):
-        search_schema.enabled = False
+    async def test_disabled_tool_blocked(self, kernel):
+        disabled_schema = SkillManifest(
+            name="web_search",
+            version="1.0.0",
+            description="Search the web",
+            category="search",
+            risk_level=RiskLevel.LOW,
+            capabilities=frozenset({"net:fetch"}),
+            parameters={"type": "object", "properties": {}, "required": []},
+            enabled=False,
+        )
         call = make_call("web_search", {"query": "test"})
-        decision = await kernel.evaluate(call, search_schema, TrustLevel.LOW)
+        decision = await kernel.evaluate(call, disabled_schema, TrustLevel.LOW)
         assert decision.is_blocked
         assert "disabled" in decision.reason.lower()
 
     @pytest.mark.asyncio
     async def test_high_trust_auto_approves_high_risk(self, kernel, terminal_schema):
         call = make_call("terminal_exec", {"command": "git status"})
-        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.HIGH)
+        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.HIGH, granted_capabilities=_ALL_CAPS)
         assert decision.is_approved
 
     @pytest.mark.asyncio
@@ -329,7 +351,7 @@ class TestSafetyKernel:
     ):
         # MEDIUM trust: auto-approve HIGH, confirm CRITICAL
         call = make_call("terminal_exec", {"command": "git push origin main"})
-        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.MEDIUM)
+        decision = await kernel.evaluate(call, terminal_schema, TrustLevel.MEDIUM, granted_capabilities=_ALL_CAPS)
         # git push is HIGH → approved with MEDIUM trust
         assert decision.is_approved
 

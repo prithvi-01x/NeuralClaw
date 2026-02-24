@@ -51,15 +51,12 @@ from config.settings import Settings
 from memory.memory_manager import MemoryManager
 from observability.logger import get_logger
 from safety.safety_kernel import SafetyKernel
-from tools.tool_registry import registry as global_registry
-from tools.tool_bus import ToolBus
-from tools.types import TrustLevel
+from skills.types import TrustLevel
 
-# Import tools so they self-register
-import tools.filesystem  # noqa: F401
-import tools.terminal  # noqa: F401
-import tools.search  # noqa: F401
-import tools.web_fetch  # noqa: F401
+# Skill system
+from pathlib import Path as _SkillPath
+from skills.loader import SkillLoader as _SkillLoader
+from skills.bus import SkillBus as _SkillBus
 
 from interfaces.model_selector import (
     build_telegram_model_keyboard,
@@ -190,6 +187,12 @@ class TelegramBot:
                 trust_level=TrustLevel(self._settings.agent.default_trust_level),
                 max_turns=self._settings.memory.max_short_term_turns,
             )
+            # Register in MemoryManager._sessions so both share the same
+            # ShortTermMemory object — prevents ghost-session desync (finding #3).
+            if self._memory:
+                self._memory._sessions[self._sessions[chat_id].id] = (
+                    self._sessions[chat_id].memory
+                )
             log.info("telegram.session_created", chat_id=chat_id)
         return self._sessions[chat_id]
 
@@ -206,7 +209,7 @@ class TelegramBot:
             extra_cmds = self._settings.tools.terminal.whitelist_extra or []
             safety = SafetyKernel(
                 allowed_paths=allowed_paths,
-                extra_allowed_commands=extra_cmds,
+                whitelist_extra=extra_cmds,
             )
 
             # Bug 11 fix: the original closure captured `update` at orchestrator
@@ -237,11 +240,26 @@ class TelegramBot:
                 timeout_seconds=self._settings.tools.terminal.default_timeout_seconds,
             )
 
+            # Skill registry + SkillBus for this chat's orchestrator
+            _base = _SkillPath(__file__).parent.parent
+            _skill_registry = _SkillLoader().load_all(
+                [
+                    _base / "skills" / "builtin",
+                    _base / "skills" / "plugins",
+                ],
+                strict=True,   # production: raise on broken skill files
+            )
+            _skill_bus = _SkillBus(
+                registry=_skill_registry,
+                safety_kernel=safety,
+                default_timeout_seconds=self._settings.tools.terminal.default_timeout_seconds,
+            )
+
             self._orchestrators[chat_id] = Orchestrator.from_settings(
                 settings=self._settings,
                 llm_client=llm_client,
-                tool_bus=bus,
-                tool_registry=global_registry,
+                tool_bus=_skill_bus,
+                tool_registry=_skill_registry,
                 memory_manager=self._memory,
                 on_response=_stream_callback,
             )
@@ -309,14 +327,14 @@ class TelegramBot:
 
         thinking_msg = await update.message.reply_text("⏳ Thinking…")
 
-        response = await orc.run_turn(session, message)
+        turn_result = await orc.run_turn(session, message)
 
         try:
             await thinking_msg.delete()
-        except Exception:
-            pass
+        except Exception as _del_err:
+            log.debug("telegram.delete_thinking_msg_failed", error=str(_del_err))
 
-        await self._send_response(chat_id, response, update)
+        await self._send_response(chat_id, turn_result.response, update)
 
     async def _cmd_run(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._auth_check(update):
@@ -373,8 +391,8 @@ class TelegramBot:
         results = await self._memory.search_all(query, n_per_collection=3)
         try:
             await thinking.delete()
-        except Exception:
-            pass
+        except Exception as _del_err:
+            log.debug("telegram.delete_thinking_msg_failed", error=str(_del_err))
 
         if not results:
             await update.message.reply_text("No relevant memories found.")
@@ -578,8 +596,8 @@ class TelegramBot:
                     cap_note = "\n⚠️ _Chat-only mode — tools not supported by this model._"
                 else:
                     cap_note = "\n✅ _Tool calling: enabled_"
-            except Exception:
-                pass
+            except Exception as _cap_err:
+                log.debug("telegram.capability_check_failed", error=str(_cap_err))
 
             await query.edit_message_text(
                 f"✅ Switched to *{opt.name}*\n"
@@ -706,8 +724,8 @@ class TelegramBot:
                         chat_id=chat_id,
                         text=_strip_markdown(chunk)[:_MAX_MESSAGE_LEN],
                     )
-                except Exception:
-                    pass
+                except Exception as _send_err:
+                    log.warning("telegram.send_plaintext_fallback_failed", error=str(_send_err), chat_id=chat_id)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

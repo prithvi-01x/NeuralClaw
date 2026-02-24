@@ -20,7 +20,7 @@ Usage:
 
     caps = get_capabilities("ollama", "codellama:latest")
     if not caps.supports_tools:
-        print("Running in chat-only mode")
+        from observability.logger import get_logger as _caps_log; _caps_log("brain.capabilities").info("model.chat_only_mode", provider=provider, model=model_id)
 
     # After a live probe (OllamaClient does this at connect time):
     register_capabilities("ollama", "qwen2.5:3b", supports_tools=True)

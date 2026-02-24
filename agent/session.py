@@ -16,7 +16,7 @@ from typing import Optional
 
 from memory.short_term import ShortTermMemory
 from observability.logger import get_logger
-from tools.types import TrustLevel
+from skills.types import TrustLevel
 
 log = get_logger(__name__)
 
@@ -89,6 +89,10 @@ class Session:
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
 
+        # Capability-based permissions — checked by SafetyKernel before execution
+        # Defaults to empty: every skill that requires capabilities must be explicitly granted.
+        self.granted_capabilities: frozenset = frozenset()
+
         # Cooperative cancellation
         self._cancel_event = asyncio.Event()
 
@@ -125,10 +129,14 @@ class Session:
         self.memory.add_message(Message.assistant(content))
 
     def add_message(self, message) -> None:
-        from brain.types import Role
+        """Add any message type to short-term memory.
+
+        NOTE: Does NOT increment turn_count — use add_user_message() for user
+        messages so the counter is only incremented once per turn. This method
+        is provided for callers that already have a fully constructed Message
+        object (e.g. tool-result injection during context rebuild).
+        """
         self.memory.add_message(message)
-        if message.role == Role.USER:
-            self.turn_count += 1
 
     def get_messages(self, system_prompt: Optional[str] = None) -> list:
         return self.memory.get_context_messages(system_prompt=system_prompt)
@@ -161,6 +169,16 @@ class Session:
         self.trust_level = level
         log.info("session.trust_changed", session_id=self.id, old=old.value, new=level.value)
 
+    def grant_capability(self, capability: str) -> None:
+        """Grant a capability to this session (e.g. 'shell:run', 'fs:write')."""
+        self.granted_capabilities = self.granted_capabilities | {capability}
+        log.info("session.capability_granted", session_id=self.id, capability=capability)
+
+    def revoke_capability(self, capability: str) -> None:
+        """Revoke a previously granted capability."""
+        self.granted_capabilities = self.granted_capabilities - {capability}
+        log.info("session.capability_revoked", session_id=self.id, capability=capability)
+
     # ── Metrics ───────────────────────────────────────────────────────────────
 
     def record_token_usage(self, input_tokens: int, output_tokens: int) -> None:
@@ -173,7 +191,17 @@ class Session:
     # ── Cancellation ─────────────────────────────────────────────────────────
 
     def cancel(self) -> None:
+        """Signal cooperative cancellation and cancel all pending confirmation futures.
+
+        Cancelling the futures allows any executor awaiting `asyncio.wait_for(future, ...)`
+        to raise `CancelledError` immediately instead of hanging for 120 s.
+        """
         self._cancel_event.set()
+        # Propagate to every pending confirmation so executors wake up immediately.
+        for tool_call_id, fut in list(self._pending_confirmations.items()):
+            if not fut.done():
+                fut.cancel()
+        self._pending_confirmations.clear()
         log.info("session.cancel_requested", session_id=self.id)
 
     def is_cancelled(self) -> bool:
@@ -185,10 +213,25 @@ class Session:
     # ── Confirmation ──────────────────────────────────────────────────────────
 
     def register_confirmation(self, tool_call_id: str) -> "asyncio.Future[bool]":
-        loop = asyncio.get_running_loop()
+        """Register a pending confirmation and return the future to await on.
+
+        Must be called from within a running event loop.
+        Raises RuntimeError if called outside an async context.
+        """
+        loop = asyncio.get_running_loop()  # raises RuntimeError if no loop — intentional
         future: asyncio.Future[bool] = loop.create_future()
         self._pending_confirmations[tool_call_id] = future
         return future
+
+    def cancel_confirmation(self, tool_call_id: str) -> None:
+        """Remove a pending confirmation and cancel its future so the awaiter wakes up.
+
+        Without this, the executor's `asyncio.wait_for(future, 120.0)` has to
+        wait the full timeout before returning False.
+        """
+        fut = self._pending_confirmations.pop(tool_call_id, None)
+        if fut is not None and not fut.done():
+            fut.cancel()
 
     def resolve_confirmation(self, tool_call_id: str, approved: bool) -> bool:
         future = self._pending_confirmations.pop(tool_call_id, None)

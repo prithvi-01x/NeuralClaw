@@ -194,6 +194,9 @@ class ResilientLLMClient(BaseLLMClient):
                     to_client=repr(client),
                     reason=str(last_error),
                 )
+                # Mirror the active client's tool support flag so the
+                # orchestrator's pre-check reflects the actual provider in use.
+                self.supports_tools = getattr(client, "supports_tools", True)
 
             try:
                 return await _call_with_retry(

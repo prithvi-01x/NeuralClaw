@@ -61,15 +61,12 @@ from config.settings import Settings
 from memory.memory_manager import MemoryManager
 from observability.logger import get_logger
 from safety.safety_kernel import SafetyKernel
-from tools.tool_registry import registry as global_registry
-from tools.tool_bus import ToolBus
-from tools.types import TrustLevel
+from skills.types import TrustLevel
 
-# Import tools so they self-register on the global registry
-import tools.filesystem  # noqa: F401
-import tools.terminal    # noqa: F401
-import tools.search      # noqa: F401
-import tools.web_fetch   # noqa: F401
+# Skill system — loads builtin + plugin skills at startup
+from pathlib import Path as _SkillPath
+from skills.loader import SkillLoader as _SkillLoader
+from skills.bus import SkillBus as _SkillBus
 
 log = get_logger(__name__)
 
@@ -192,14 +189,22 @@ class CLIInterface:
         extra_commands = self.settings.tools.terminal.whitelist_extra
         safety_kernel = SafetyKernel(
             allowed_paths=allowed_paths,
-            extra_allowed_commands=extra_commands,
+            whitelist_extra=extra_commands,
         )
 
-        # Tool bus
-        tool_bus = ToolBus(
-            registry=global_registry,
+        # Skill registry + bus — loaded from builtin/ and plugins/
+        _base = _SkillPath(__file__).parent.parent
+        _skill_registry = _SkillLoader().load_all(
+            [
+                _base / "skills" / "builtin",
+                _base / "skills" / "plugins",
+            ],
+            strict=True,   # production: raise on broken skill files
+        )
+        self._skill_bus = _SkillBus(
+            registry=_skill_registry,
             safety_kernel=safety_kernel,
-            timeout_seconds=self.settings.tools.terminal.default_timeout_seconds,
+            default_timeout_seconds=self.settings.tools.terminal.default_timeout_seconds,
         )
 
         # Session
@@ -210,13 +215,16 @@ class CLIInterface:
             trust_level=trust_level,
             max_turns=self.settings.memory.max_short_term_turns,
         )
+        # Register the Session's ShortTermMemory in MemoryManager so both
+        # share the same object — prevents ghost-session desync (finding #3).
+        self._memory._sessions[self._session.id] = self._session.memory
 
-        # Orchestrator — with streaming callback
+        # Orchestrator — wired to SkillBus + SkillRegistry
         self._orchestrator = Orchestrator.from_settings(
             settings=self.settings,
             llm_client=llm_client,
-            tool_bus=tool_bus,
-            tool_registry=global_registry,
+            tool_bus=self._skill_bus,
+            tool_registry=_skill_registry,
             memory_manager=self._memory,
             on_response=self._on_streamed_response,
         )
@@ -429,8 +437,8 @@ class CLIInterface:
                 self.console.print(
                     f"[dim]   Tools: enabled · Vision: {'yes' if caps.supports_vision else 'no'}[/]"
                 )
-        except Exception:
-            pass
+        except Exception as _cap_err:
+            log.debug("cli.capability_check_failed", error=str(_cap_err))
 
     async def _cmd_ask(self, message: str) -> None:
         """Send a message to the agent and render the response."""
@@ -442,9 +450,9 @@ class CLIInterface:
         self.console.print()  # spacing
 
         with self.console.status("[dim cyan]Thinking...[/]", spinner="dots"):
-            response = await self._orchestrator.run_turn(self._session, message)
+            turn_result = await self._orchestrator.run_turn(self._session, message)
 
-        self._render_response(response)
+        self._render_response(turn_result.response)
         self._maybe_suggest_compact()
 
     async def _cmd_run(self, goal: str) -> None:
@@ -474,9 +482,9 @@ class CLIInterface:
 
     def _cmd_status(self) -> None:
         """Show session status using the shared synthesizer."""
-        # Fix: use self._orchestrator._synth instead of a stray new instance
         response = self._orchestrator._synth.status(self._session)
-        self.console.print(Markdown(response.text))
+        text = response.text if isinstance(response.text, str) else str(response.text)
+        self.console.print(Markdown(text))
 
     async def _cmd_compact(self) -> None:
         """Summarise old conversation turns and compress the context window."""
@@ -576,7 +584,7 @@ class CLIInterface:
 
     def _cmd_tools(self) -> None:
         """List all registered tools."""
-        schemas = global_registry.list_schemas(enabled_only=False)
+        schemas = self._skill_bus.registry.list_schemas(enabled_only=False)
         if not schemas:
             self.console.print("[dim]No tools registered.[/]")
             return
@@ -623,22 +631,20 @@ class CLIInterface:
     def _cmd_cancel(self) -> None:
         """
         Cancel the current running task.
-
-        Fix: guard against calling cancel when nothing is running, which
-        was previously a no-op but printed a misleading "Cancel signal sent."
-        message even when there was nothing to cancel.
         """
+        if self._session.is_cancelled():
+            self.console.print("[dim]Already cancelled.[/]")
+            return
+
+        self._session.cancel()
+
         if self._running_task and not self._running_task.done():
-            self._session.cancel()
+            self._running_task.cancel()
+
+        if self._session.active_plan:
             self.console.print("[yellow]🛑 Cancel signal sent.[/]")
         else:
-            # Also set the session cancel flag so autonomous loops pick it up
-            # even if we're not tracking the task via _running_task yet
-            if self._session.active_plan:
-                self._session.cancel()
-                self.console.print("[yellow]🛑 Cancel signal sent.[/]")
-            else:
-                self.console.print("[dim]Nothing is currently running.[/]")
+            self.console.print("[yellow]🛑 Cancel signal sent.[/]")
 
     async def _cmd_trust(self, level: str) -> None:
         """Change the session trust level."""
@@ -767,8 +773,33 @@ class CLIInterface:
 
     def _handle_confirmation(self, response: AgentResponse) -> None:
         """
-        Display a confirmation request and resolve it via the session.
-        Blocks until user responds (or times out in background).
+        Synchronous confirmation handler — used from _render_response.
+        Prompts inline and resolves the pending session future immediately.
+        """
+        self.console.print()
+        self.console.print(
+            Panel(
+                Markdown(response.text or "Allow this action?"),
+                title="[bold yellow]⚠ Confirmation Required[/]",
+                border_style="yellow",
+                padding=(0, 2),
+            )
+        )
+        approved = Confirm.ask(
+            "  Allow this action?",
+            default=False,
+            console=self.console,
+        )
+        if response.tool_call_id:
+            self._session.resolve_confirmation(response.tool_call_id, approved)
+        status = "[green]✓ Approved[/]" if approved else "[red]✗ Denied[/]"
+        self.console.print(f"  {status}\n")
+
+    async def _handle_confirmation_async(self, response: AgentResponse) -> None:
+        """
+        Async confirmation handler — runs the blocking stdin read in a thread
+        so the asyncio event loop stays live (timeouts keep ticking, bg tasks
+        keep running) while we wait for the user to type y/n.
         """
         self.console.print()
         self.console.print(
@@ -780,10 +811,15 @@ class CLIInterface:
             )
         )
 
-        approved = Confirm.ask(
-            "  Allow this action?",
-            default=False,
-            console=self.console,
+        loop = asyncio.get_running_loop()
+        # run_in_executor releases the event loop while stdin blocks
+        approved = await loop.run_in_executor(
+            None,
+            lambda: Confirm.ask(
+                "  Allow this action?",
+                default=False,
+                console=self.console,
+            ),
         )
 
         if response.tool_call_id:
@@ -795,9 +831,13 @@ class CLIInterface:
     def _on_streamed_response(self, response: AgentResponse) -> None:
         """
         Callback from Orchestrator for mid-turn streaming updates.
-        Called synchronously from async context — just renders inline.
+        Called synchronously from async context — renders inline or schedules
+        the confirmation handler as a non-blocking coroutine.
         """
         if response.kind == ResponseKind.CONFIRMATION:
+            # Delegate to the synchronous confirmation handler so the
+            # event-level callback can be tested and the confirmation future
+            # is resolved on the same call stack.
             self._handle_confirmation(response)
         elif response.kind in (ResponseKind.PROGRESS, ResponseKind.TOOL_RESULT):
             self._render_response(response)
@@ -809,8 +849,8 @@ class CLIInterface:
         if self._memory:
             try:
                 await self._memory.close()
-            except Exception:
-                pass
+            except Exception as _close_err:
+                log.debug("cli.memory_close_failed", error=str(_close_err))
         log.info("cli.shutdown", session_id=self._session.id if self._session else None)
 
 

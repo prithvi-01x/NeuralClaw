@@ -63,14 +63,17 @@ tools:
     user_agent: "Mozilla/5.0 (compatible; NeuralClaw/1.0)"
     timeout_ms: 15000
   terminal:
-    working_dir: "/home/gabimaruu"
+    working_dir: "./data/agent_files"
     default_timeout_seconds: 30
     docker_sandbox: false
     docker_image: "python:3.11-slim"
-    whitelist_extra: ["*"]
+    # Add specific command names here if you need extra binaries beyond the
+    # built-in allowlist. Using ["*"] disables the safety whitelist entirely
+    # and is NEVER permitted. Leave empty unless you have a specific need.
+    whitelist_extra: []
   filesystem:
     allowed_paths:
-      - "/home/gabimaruu"
+      - "./data/agent_files"
 
 safety:
   default_permission_level: "read"
@@ -101,3 +104,18 @@ logging:
   console_output: false   # false = logs to file only, terminal stays clean
   # json_format auto-detected from tty; override here if needed
   # json_format: true
+# ── Skills Retry Policy (Phase 6) ────────────────────────────────────────────
+skills:
+  retry:
+    retryable_errors:
+      - SkillTimeoutError
+      - LLMRateLimitError
+    max_attempts: 3
+    base_delay: 1.0
+    max_delay: 30.0
+    jitter: true
+    overrides:
+      terminal_exec:
+        max_attempts: 1   # never retry shell commands (not idempotent)
+      web_fetch:
+        max_attempts: 3

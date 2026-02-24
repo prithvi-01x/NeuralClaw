@@ -269,8 +269,9 @@ def load_default_model() -> Optional[str]:
     try:
         if _DEFAULT_PATH.exists():
             return json.loads(_DEFAULT_PATH.read_text())["model_key"]
-    except Exception:
-        pass
+    except Exception as e:
+        import logging as _logging
+        _logging.getLogger(__name__).debug("model_selector.load_default_failed: %s", e)
     return None
 
 
@@ -443,7 +444,7 @@ def _read_key(fd: int) -> str:
                 sys.stdin.read(1)
                 return "pageup" if seq == "[5" else "pagedown"
         except Exception:
-            pass
+            pass  # non-blocking; ESC without a sequence suffix is fine
         return "esc"
     if ch in ("\r", "\n"): return "enter"
     if ch in ("\x03", "\x04"): return "quit"
@@ -479,7 +480,7 @@ async def _read_key_async(fd: int) -> str:
         try:
             loop.remove_reader(fd)
         except Exception:
-            pass
+            pass  # may already be removed on cancellation — safe to ignore
 
     # fd is readable — read first byte using os.read (non-buffered)
     ch = os.read(fd, 1)
@@ -636,8 +637,9 @@ def _render_selector(
                 caps = get_capabilities(opt.provider, opt.model_id)
                 if not caps.supports_tools:
                     tags += f" {_DIM}[chat only]{_R}"; tv += 11
-            except Exception:
-                pass
+            except Exception as _cap_err:
+                import logging as _logging
+                _logging.getLogger(__name__).debug("model_selector.caps_check_failed: %s", _cap_err)
 
         # Name
         if unavailable:
@@ -803,9 +805,10 @@ async def run_model_selector(
                 clear_ui()
                 draw_ui()
             except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
+                pass  # expected on cancellation
+            except Exception as _watch_err:
+                import logging as _logging
+                _logging.getLogger(__name__).debug("model_selector.ollama_watcher_failed: %s", _watch_err)
 
         watcher_task: asyncio.Task = asyncio.create_task(_ollama_watcher())
 
@@ -825,10 +828,11 @@ async def run_model_selector(
                     # Update module-level cache
                     global MODEL_OPTIONS
                     MODEL_OPTIONS = list(options)
-                except Exception:
-                    pass
-                clear_ui()
-                draw_ui()
+                except Exception as _refresh_err:
+                    import logging as _logging
+                    _logging.getLogger(__name__).debug(
+                        "model_selector.ollama_refresh_failed: %s", _refresh_err
+                    )
 
             if key in ("esc", "q", "quit"):
                 clear_ui()
@@ -886,14 +890,14 @@ async def run_model_selector(
                 try:
                     await task
                 except (asyncio.CancelledError, Exception):
-                    pass
+                    pass  # cleanup — ignore errors
         # Restore blocking mode then terminal settings
         try:
             import fcntl as _fcntl, os as _os2
             fl = _fcntl.fcntl(fd, _fcntl.F_GETFL)
             _fcntl.fcntl(fd, _fcntl.F_SETFL, fl & ~_os2.O_NONBLOCK)
         except Exception:
-            pass
+            pass  # non-POSIX environment or already restored
         termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
         sys.stdout.write("\r\n")
         sys.stdout.flush()

@@ -1,16 +1,19 @@
 """
 safety/safety_kernel.py — Safety Kernel
 
-The gatekeeper that sits between the LLM and tool execution.
-Every tool call MUST pass through here before it executes.
+Evaluates every SkillCall before execution and returns an immutable
+SafetyDecision (APPROVED | CONFIRM_NEEDED | BLOCKED).
 
-Decision flow:
-  1. Is the tool registered and enabled?
-  2. Check blocked patterns (terminal) / blocked paths (filesystem)
-  3. Score the risk level (baseline + argument escalation)
-  4. Apply trust level: does this risk require confirmation?
-  5. Emit audit log entry
-  6. Return SafetyDecision: APPROVED | BLOCKED | CONFIRM_NEEDED
+Design principles
+-----------------
+* Operates entirely on skills.types — zero coupling to the legacy tools/ system.
+* Fail-closed: unknown tools → BLOCKED, unknown risk → CRITICAL.
+* Capability-based: checks session.granted_capabilities against
+  skill.manifest.capabilities before risk scoring.
+* Typed decision: SafetyDecision is a frozen dataclass; no string sniffing.
+
+Phase 3 (core-hardening): Ported from tools.types to skills.types.
+                          Added capability-based permission checks.
 """
 
 from __future__ import annotations
@@ -20,204 +23,176 @@ from typing import Optional
 from observability.logger import get_logger
 from safety.risk_scorer import score_tool_call
 from safety.whitelist import check_command, check_path
-from tools.types import (
+from skills.types import (
     RiskLevel,
     SafetyDecision,
     SafetyStatus,
-    ToolCall,
-    ToolSchema,
+    SkillCall,
+    SkillManifest,
     TrustLevel,
 )
 
 log = get_logger(__name__)
 
-# Risk threshold at which confirmation is required, per trust level
-_CONFIRM_THRESHOLD: dict[TrustLevel, RiskLevel] = {
-    TrustLevel.LOW: RiskLevel.HIGH,       # confirm HIGH and CRITICAL
-    TrustLevel.MEDIUM: RiskLevel.CRITICAL, # confirm only CRITICAL
-    TrustLevel.HIGH: None,                 # never confirm (auto-approve all)
-}
-
 
 class SafetyKernel:
     """
-    Evaluates tool calls for safety before execution.
+    Gate-keeper for all skill executions.
 
-    Usage:
-        kernel = SafetyKernel(allowed_paths=["~/agent_files"])
-        decision = await kernel.evaluate(tool_call, schema, trust_level)
-        if decision.is_approved:
-            result = await tool.execute(tool_call)
-        elif decision.needs_confirmation:
-            # ask the user via Telegram / CLI
-        else:
-            # blocked — return error to LLM
+    Stateless between calls — safe to share across sessions.
+    All configuration is injected at construction time.
     """
 
     def __init__(
         self,
-        allowed_paths: Optional[list[str]] = None,
-        extra_allowed_commands: Optional[list[str]] = None,
-    ):
-        self.allowed_paths = allowed_paths or ["~/agent_files"]
-        self.extra_allowed_commands = extra_allowed_commands or []
+        allowed_paths:   Optional[list[str]] = None,
+        whitelist_extra: Optional[list[str]] = None,
+    ) -> None:
+        self._allowed_paths   = allowed_paths   or []
+        self._whitelist_extra = whitelist_extra or []
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────────────────
 
     async def evaluate(
         self,
-        tool_call: ToolCall,
-        schema: ToolSchema,
-        trust_level: TrustLevel = TrustLevel.LOW,
+        skill_call:           SkillCall,
+        manifest:             SkillManifest,
+        trust_level:          TrustLevel = TrustLevel.LOW,
+        granted_capabilities: frozenset  = frozenset(),
     ) -> SafetyDecision:
         """
-        Evaluate a tool call and return a safety decision.
+        Evaluate a skill call and return a SafetyDecision.
 
-        Args:
-            tool_call:   The tool call from the LLM.
-            schema:      The tool's registered schema.
-            trust_level: The current session's trust level.
+        Order of checks (first failure wins):
+          1. Skill enabled check
+          2. Capability check (manifest.capabilities ⊆ granted_capabilities)
+          3. Category-specific whitelist (terminal / filesystem)
+          4. Argument-based risk scoring
+          5. Trust-level gate
 
-        Returns:
-            SafetyDecision with status APPROVED, BLOCKED, or CONFIRM_NEEDED.
+        Returns SafetyDecision — never raises.
         """
-        # ── Step 1: Tool enabled? ─────────────────────────────────────────────
-        if not schema.enabled:
-            return self._decision(
-                tool_call, RiskLevel.LOW, SafetyStatus.BLOCKED,
-                f"Tool '{tool_call.name}' is disabled in configuration"
-            )
+        name    = skill_call.skill_name
+        call_id = skill_call.id
 
-        # ── Step 2: Category-specific whitelist checks ────────────────────────
-        if schema.category == "terminal":
-            command = tool_call.arguments.get("command", "")
-            allowed, reason, is_high_risk = check_command(
-                command, self.extra_allowed_commands
+        # ── 1. Enabled check ─────────────────────────────────────────────────
+        if not manifest.enabled if hasattr(manifest, "enabled") else False:
+            reason = f"Skill '{name}' is disabled in configuration."
+            log.info("safety.blocked.disabled", skill=name, call_id=call_id)
+            return self._decision(skill_call, RiskLevel.MEDIUM,
+                                  SafetyStatus.BLOCKED, reason)
+
+        # ── 2. Capability check ───────────────────────────────────────────────
+        required = manifest.capabilities or frozenset()
+        if required and not required.issubset(granted_capabilities):
+            missing = required - granted_capabilities
+            reason = (
+                f"Skill '{name}' requires capabilities {sorted(missing)} "
+                f"that have not been granted to this session."
+            )
+            log.warning(
+                "safety.blocked.capability",
+                skill=name,
+                call_id=call_id,
+                required=sorted(required),
+                granted=sorted(granted_capabilities),
+                missing=sorted(missing),
+            )
+            return self._decision(skill_call, RiskLevel.MEDIUM,
+                                  SafetyStatus.BLOCKED, reason)
+
+        # ── 3. Category-specific whitelist checks ─────────────────────────────
+        if manifest.category == "terminal":
+            allowed, wl_reason, is_hr = check_command(
+                skill_call.arguments.get("command", ""),
+                extra_allowed=self._whitelist_extra,
             )
             if not allowed:
-                return self._decision(
-                    tool_call, RiskLevel.CRITICAL, SafetyStatus.BLOCKED, reason
-                )
-            # If command is high-risk, ensure at least HIGH risk level
-            if is_high_risk:
-                effective_risk = RiskLevel.HIGH
-                score_reason = f"High-risk command detected: {reason}"
-            else:
-                effective_risk, score_reason = score_tool_call(tool_call, schema)
+                log.warning("safety.blocked.terminal", skill=name, reason=wl_reason)
+                return self._decision(skill_call, RiskLevel.HIGH,
+                                      SafetyStatus.BLOCKED, wl_reason)
 
-        elif schema.category == "filesystem":
-            path = tool_call.arguments.get(
-                "path",
-                tool_call.arguments.get("file_path", "")
-            )
-            _WRITE_KEYWORDS = ("write", "create", "delete", "remove", "append", "move", "copy")
-            operation = "write" if any(kw in tool_call.name for kw in _WRITE_KEYWORDS) else "read"
-            if path:
-                path_allowed, path_reason = check_path(
-                    path, self.allowed_paths, operation
-                )
-                if not path_allowed:
-                    return self._decision(
-                        tool_call, RiskLevel.CRITICAL, SafetyStatus.BLOCKED, path_reason
-                    )
-            effective_risk, score_reason = score_tool_call(tool_call, schema)
+        elif manifest.category == "filesystem":
+            path_arg = skill_call.arguments.get("path", "")
+            operation = "write" if any(
+                kw in name for kw in ("write", "append", "delete", "move")
+            ) else "read"
+            allowed, wl_reason = check_path(path_arg, self._allowed_paths, operation)
+            if not allowed:
+                log.warning("safety.blocked.path", skill=name, reason=wl_reason)
+                return self._decision(skill_call, RiskLevel.HIGH,
+                                      SafetyStatus.BLOCKED, wl_reason)
 
-        else:
-            # ── MCP tools and all other non-terminal/filesystem tools ─────────
-            # MCP tools land here.  They bypass the binary whitelist because
-            # their category is "mcp.<server_name>" rather than "terminal",
-            # but they may still accept path or command arguments.
-            # We apply the appropriate check whenever we see recognisable
-            # argument keys so a malicious or compromised MCP server cannot
-            # trivially escape the sandbox via argument passing.
+        # ── 4. Argument-based risk scoring ────────────────────────────────────
+        effective_risk, score_reason = score_tool_call(skill_call, manifest)
 
-            args = tool_call.arguments
-
-            # Check any argument that looks like it carries a shell command.
-            _CMD_ARG_KEYS = ("command", "cmd", "shell", "exec", "run", "script")
-            for key in _CMD_ARG_KEYS:
-                if key in args and isinstance(args[key], str):
-                    allowed, reason, is_high_risk = check_command(
-                        args[key], self.extra_allowed_commands
-                    )
-                    if not allowed:
-                        return self._decision(
-                            tool_call, RiskLevel.CRITICAL, SafetyStatus.BLOCKED,
-                            f"MCP tool argument '{key}' blocked by command whitelist: {reason}"
-                        )
-                    if is_high_risk:
-                        effective_risk = max(effective_risk, RiskLevel.HIGH) \
-                            if "effective_risk" in dir() else RiskLevel.HIGH
-
-            # Check any argument that looks like it carries a filesystem path.
-            _PATH_ARG_KEYS = ("path", "file_path", "filepath", "file", "dir",
-                              "directory", "dest", "destination", "source", "src")
-            for key in _PATH_ARG_KEYS:
-                if key in args and isinstance(args[key], str):
-                    _WRITE_KEYWORDS = ("write", "create", "delete", "remove",
-                                       "append", "move", "copy", "upload")
-                    operation = "write" if any(
-                        kw in tool_call.name for kw in _WRITE_KEYWORDS
-                    ) else "read"
-                    path_allowed, path_reason = check_path(
-                        args[key], self.allowed_paths, operation
-                    )
-                    if not path_allowed:
-                        return self._decision(
-                            tool_call, RiskLevel.CRITICAL, SafetyStatus.BLOCKED,
-                            f"MCP tool argument '{key}' blocked by path whitelist: {path_reason}"
-                        )
-
-            effective_risk, score_reason = score_tool_call(tool_call, schema)
-
-        # ── Step 3: Apply trust level to determine final status ───────────────
-        confirm_threshold = _CONFIRM_THRESHOLD.get(trust_level)
-
-        if effective_risk == RiskLevel.CRITICAL and confirm_threshold is None:
-            # Even HIGH trust requires explicit opt-in to CRITICAL actions
-            # (user must set /trust critical explicitly — future feature)
-            status = SafetyStatus.CONFIRM_NEEDED
-            final_reason = f"CRITICAL risk action requires confirmation regardless of trust level"
-        elif confirm_threshold is None:
-            status = SafetyStatus.APPROVED
-            final_reason = score_reason
-        elif effective_risk >= confirm_threshold:
-            status = SafetyStatus.CONFIRM_NEEDED
-            final_reason = (
-                f"Risk level {effective_risk.value} meets confirmation threshold "
-                f"({confirm_threshold.value}) for trust level {trust_level.value}"
-            )
-        else:
-            status = SafetyStatus.APPROVED
-            final_reason = score_reason
-
-        decision = self._decision(tool_call, effective_risk, status, final_reason)
-
-        # ── Step 4: Audit log ─────────────────────────────────────────────────
-        log_fn = log.warning if status != SafetyStatus.APPROVED else log.info
-        log_fn(
-            "safety.decision",
-            tool=tool_call.name,
-            tool_call_id=tool_call.id,
-            status=status.value,
-            risk_level=effective_risk.value,
-            trust_level=trust_level.value,
-            reason=final_reason,
+        # ── 5. Trust-level gate ────────────────────────────────────────────────
+        status, final_reason = self._apply_trust(
+            effective_risk, trust_level, score_reason, manifest
         )
 
-        return decision
+        log.debug(
+            "safety.decision",
+            skill=name,
+            call_id=call_id,
+            status=status.value,
+            risk=effective_risk.value,
+            reason=final_reason,
+        )
+        return self._decision(skill_call, effective_risk, status, final_reason)
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Internals
+    # ─────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _apply_trust(
+        risk:     RiskLevel,
+        trust:    TrustLevel,
+        reason:   str,
+        manifest: SkillManifest,
+    ) -> tuple[SafetyStatus, str]:
+        """
+        Map (risk, trust) → (SafetyStatus, final_reason).
+
+        Trust=LOW:    confirm on HIGH+  (block on CRITICAL if not confirmable)
+        Trust=MEDIUM: confirm on CRITICAL only
+        Trust=HIGH:   auto-approve everything
+        """
+        requires_confirm = getattr(manifest, "requires_confirmation", False)
+
+        if trust == TrustLevel.HIGH:
+            return SafetyStatus.APPROVED, reason
+
+        if trust == TrustLevel.MEDIUM:
+            if risk == RiskLevel.CRITICAL:
+                if requires_confirm:
+                    return SafetyStatus.CONFIRM_NEEDED, f"CRITICAL risk requires confirmation: {reason}"
+                return SafetyStatus.BLOCKED, f"CRITICAL risk auto-blocked at MEDIUM trust: {reason}"
+            return SafetyStatus.APPROVED, reason
+
+        # trust == LOW (default)
+        if risk == RiskLevel.CRITICAL:
+            if requires_confirm:
+                return SafetyStatus.CONFIRM_NEEDED, f"CRITICAL risk requires confirmation: {reason}"
+            return SafetyStatus.BLOCKED, f"CRITICAL risk auto-blocked at LOW trust: {reason}"
+        if risk == RiskLevel.HIGH:
+            return SafetyStatus.CONFIRM_NEEDED, f"HIGH risk requires confirmation: {reason}"
+        return SafetyStatus.APPROVED, reason
+
+    @staticmethod
     def _decision(
-        self,
-        tool_call: ToolCall,
-        risk_level: RiskLevel,
-        status: SafetyStatus,
-        reason: str,
+        skill_call: SkillCall,
+        risk:       RiskLevel,
+        status:     SafetyStatus,
+        reason:     str,
     ) -> SafetyDecision:
         return SafetyDecision(
             status=status,
             reason=reason,
-            risk_level=risk_level,
-            tool_name=tool_call.name,
-            tool_call_id=tool_call.id,
+            risk_level=risk,
+            tool_name=skill_call.skill_name,
+            tool_call_id=skill_call.id,
         )

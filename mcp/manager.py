@@ -29,8 +29,7 @@ from mcp.transports.stdio import StdioTransport
 from mcp.transports.http import HttpTransport
 from mcp.types import MCPServerConfig, MCPToolResult
 from observability.logger import get_logger
-from tools.tool_registry import registry as global_registry
-from tools.types import RiskLevel
+from skills.types import RiskLevel
 
 log = get_logger(__name__)
 
@@ -50,8 +49,14 @@ class MCPManager:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    async def start(self) -> None:
-        """Connect to all enabled MCP servers and register their tools."""
+    async def start(self, skill_registry=None) -> None:
+        """Connect to all enabled MCP servers and register their tools.
+
+        Args:
+            skill_registry: Optional SkillRegistry to register MCP tools into.
+                            When None, tools are registered as metadata only
+                            (useful during migration / testing).
+        """
         enabled = [c for c in self._configs.values() if c.enabled]
         if not enabled:
             log.info("mcp.manager.no_servers_enabled")
@@ -60,7 +65,7 @@ class MCPManager:
         log.info("mcp.manager.starting", servers=[c.name for c in enabled])
 
         results = await asyncio.gather(
-            *[self._connect_server(config) for config in enabled],
+            *[self._connect_server(config, skill_registry=skill_registry) for config in enabled],
             return_exceptions=True,
         )
 
@@ -183,7 +188,7 @@ class MCPManager:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    async def _connect_server(self, config: MCPServerConfig) -> None:
+    async def _connect_server(self, config: MCPServerConfig, skill_registry=None) -> None:
         """Connect to one MCP server, fetch tools, and register them."""
         transport = self._make_transport(config)
 
@@ -204,7 +209,10 @@ class MCPManager:
 
         for schema in schemas:
             self._tool_to_server[schema.name] = config.name
-            self._register_tool(schema, config)
+            if skill_registry is not None:
+                self._register_tool(schema, config, skill_registry)
+            else:
+                log.debug("mcp.tool.metadata_only", tool=schema.name, server=config.name)
 
         log.info("mcp.server.ready",
                  server=config.name,
@@ -216,8 +224,8 @@ class MCPManager:
             return HttpTransport(config)
         return StdioTransport(config)  # default: stdio
 
-    def _register_tool(self, schema, config: MCPServerConfig) -> None:
-        """Register an MCP tool on the global ToolRegistry."""
+    def _register_tool(self, schema, config: MCPServerConfig, skill_registry) -> None:
+        """Register an MCP tool on the provided SkillRegistry."""
         # Capture in closure
         tool_name = schema.name
         manager = self
@@ -231,7 +239,7 @@ class MCPManager:
         # Determine risk based on server config or tool name heuristics
         risk = _infer_risk(schema.name, config)
 
-        global_registry.register(
+        skill_registry.register(
             name=schema.name,
             description=f"[MCP: {config.name}] {schema.description}",
             category=f"mcp.{config.name}",

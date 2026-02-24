@@ -439,8 +439,9 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_requires_init(self):
+        from exceptions import MemoryError as MemorySubsystemError
         mm = MemoryManager()
-        with pytest.raises(RuntimeError, match="not initialized"):
+        with pytest.raises(MemorySubsystemError, match="not initialized"):
             await mm.store("text")
 
     @pytest.mark.asyncio
