@@ -251,11 +251,7 @@ class TelegramBot:
                         self._send_response(chat_id, resp, current_update)
                     )
 
-            bus = ToolBus(
-                registry=global_registry,
-                safety_kernel=safety,
-                timeout_seconds=self._settings.tools.terminal.default_timeout_seconds,
-            )
+
 
             # Skill registry + SkillBus for this chat's orchestrator
             _base = _SkillPath(__file__).parent.parent
@@ -437,7 +433,9 @@ class TelegramBot:
     async def _cmd_tools(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._auth_check(update):
             return
-        schemas = global_registry.list_schemas(enabled_only=True)
+        chat_id = update.effective_chat.id
+        orc = self._get_orchestrator(chat_id, update)
+        schemas = orc._registry.list_schemas(enabled_only=True)
         if not schemas:
             await update.message.reply_text("No tools registered.")
             return
