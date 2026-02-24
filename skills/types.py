@@ -185,7 +185,7 @@ class SkillResult:
             return self.output
         try:
             return json.dumps(self.output, indent=2, default=str)
-        except Exception:
+        except (TypeError, ValueError):
             return str(self.output)
 
     # ── Compatibility shims ───────────────────────────────────────────────────
@@ -249,6 +249,43 @@ class SafetyDecision:
     @property
     def needs_confirmation(self) -> bool:
         return self.status == SafetyStatus.CONFIRM_NEEDED
+
+
+@dataclass(frozen=True)
+class ConfirmationRequest:
+    """
+    Explicit confirmation gate passed to the UI when a skill needs approval.
+
+    Replaces passing a raw SafetyDecision to the confirmation callback so
+    the UI layer has a stable, purpose-built contract to render against.
+
+    Fields:
+        skill_name:   Human-readable name of the skill requesting confirmation.
+        skill_call_id: The ID of the specific SkillCall being gated.
+        risk_level:   Assessed risk of the action.
+        reason:       Human-readable explanation of why confirmation is needed.
+        arguments:    The arguments the skill will be called with (read-only).
+    """
+    skill_name:    str
+    skill_call_id: str
+    risk_level:    RiskLevel
+    reason:        str
+    arguments:     dict = field(default_factory=dict)
+
+    @classmethod
+    def from_decision(
+        cls,
+        decision: "SafetyDecision",
+        arguments: dict | None = None,
+    ) -> "ConfirmationRequest":
+        """Build a ConfirmationRequest from a SafetyDecision."""
+        return cls(
+            skill_name=decision.tool_name,
+            skill_call_id=decision.tool_call_id,
+            risk_level=decision.risk_level,
+            reason=decision.reason,
+            arguments=arguments or {},
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

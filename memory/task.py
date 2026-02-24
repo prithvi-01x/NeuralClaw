@@ -51,7 +51,7 @@ try:
     from observability.logger import get_logger as _get_logger
     _log_raw = _get_logger(__name__)
     _STRUCTLOG = True
-except Exception:
+except ImportError:
     import logging as _logging
     _log_raw = _logging.getLogger(__name__)
     _STRUCTLOG = False

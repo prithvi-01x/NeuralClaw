@@ -28,7 +28,7 @@ from typing import Any, Callable, Optional
 
 from skills.registry import SkillRegistry
 from skills.types import (
-    RiskLevel, SafetyDecision, SafetyStatus,
+    ConfirmationRequest, RiskLevel, SafetyDecision, SafetyStatus,
     SkillCall, SkillResult, TrustLevel,
 )
 from exceptions import NeuralClawError
@@ -247,8 +247,9 @@ class SkillBus:
             )
 
         if decision is not None and decision.needs_confirmation:
+            confirm_req = ConfirmationRequest.from_decision(decision, arguments=call.arguments)
             approved = await self._handle_confirmation(
-                decision,
+                confirm_req,
                 per_call_callback=on_confirm_needed,
             )
             if not approved:
@@ -409,23 +410,25 @@ class SkillBus:
 
     async def _handle_confirmation(
         self,
-        decision,
+        confirm_req: ConfirmationRequest,
         per_call_callback: Optional[Callable] = None,
     ) -> bool:
         """
-        Request user confirmation. Uses per-call callback first (avoids shared
-        state mutation during parallel dispatches).
+        Request user confirmation. Passes a ConfirmationRequest (not raw
+        SafetyDecision) to the callback so the UI has a stable contract.
+        Uses per-call callback first to avoid shared-state mutation during
+        parallel dispatches.
         """
         callback = per_call_callback or self._on_confirm_needed
         if callback is None:
             _log("warning",
                 "skill_bus.confirm_no_handler",
-                skill=decision.tool_name,
+                skill=confirm_req.skill_name,
             )
             return False
 
         try:
-            return await callback(decision)
+            return await callback(confirm_req)
         except asyncio.CancelledError:
             raise
         except BaseException as e:

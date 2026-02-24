@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Coroutine, Optional
 
+from exceptions import NeuralClawError
 from observability.logger import get_logger
 
 log = get_logger(__name__)
@@ -238,8 +239,8 @@ class TaskScheduler:
                 await asyncio.sleep(self._tick_interval)
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                log.error("scheduler.tick_loop.error", error=str(e))
+            except (NeuralClawError, OSError, RuntimeError) as e:
+                log.error("scheduler.tick_loop.error", error=str(e), error_type=type(e).__name__)
 
     async def _check_and_fire(self) -> None:
         """Check all tasks and fire any that are due."""
@@ -280,12 +281,12 @@ class TaskScheduler:
                 task.status = TaskStatus.IDLE
                 log.info("scheduler.task.cancelled", id=task.id)
                 raise
-            except Exception as e:
+            except (NeuralClawError, OSError, RuntimeError, ValueError) as e:
                 task.status = TaskStatus.FAILED
                 task.error_count += 1
                 task.last_error = str(e)
                 log.error("scheduler.task.error",
-                           id=task.id, name=task.name, error=str(e))
+                           id=task.id, name=task.name, error=str(e), error_type=type(e).__name__)
                 # After failure, still schedule next run
             finally:
                 self._advance_schedule(task)

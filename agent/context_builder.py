@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+from exceptions import MemoryError as NeuralClawMemoryError, MemoryStoreError
 from brain.types import Message, Role, ToolSchema
 from memory.memory_manager import MemoryManager
 from observability.logger import get_logger
@@ -156,8 +157,8 @@ class ContextBuilder:
             context = await self.memory.build_memory_context(
                 query=query, session_id=session_id
             )
-        except Exception as e:
-            log.warning("context_builder.memory_search_failed", error=str(e))
+        except (NeuralClawMemoryError, MemoryStoreError, OSError) as e:
+            log.warning("context_builder.memory_search_failed", error=str(e), error_type=type(e).__name__)
             return ""
 
         if not context:

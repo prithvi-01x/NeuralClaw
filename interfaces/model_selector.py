@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
+from exceptions import NeuralClawError
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,7 +115,7 @@ class OllamaDiscovery:
         try:
             result = await loop.run_in_executor(None, self._fetch_all_sync)
             return result
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError, AttributeError) as e:
             return [], f"Ollama error: {e}"
 
     def _fetch_all_sync(self) -> tuple[list[OllamaModelMeta], Optional[str]]:
@@ -127,7 +128,7 @@ class OllamaDiscovery:
                 tags = json.loads(r.read().decode())
         except urllib.error.URLError:
             return [], "Ollama server not running"
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError, AttributeError) as e:
             return [], f"Ollama unreachable: {e}"
 
         raw_models = tags.get("models", [])
@@ -162,7 +163,7 @@ class OllamaDiscovery:
                 if mid in metas:
                     metas[mid].is_running = True
                     metas[mid].uses_gpu = rm.get("size_vram", 0) > 0
-        except Exception:
+        except (OSError, ValueError, RuntimeError, AttributeError):
             pass  # /api/ps may not exist on older Ollama versions
 
         # 3. Context length from /api/show (best-effort, cached)
@@ -195,7 +196,7 @@ class OllamaDiscovery:
                 or 0
             )
             return int(ctx) if ctx else 0
-        except Exception:
+        except (OSError, ValueError, RuntimeError, AttributeError):
             return 0
 
 
@@ -269,7 +270,7 @@ def load_default_model() -> Optional[str]:
     try:
         if _DEFAULT_PATH.exists():
             return json.loads(_DEFAULT_PATH.read_text())["model_key"]
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError, AttributeError) as e:
         import logging as _logging
         _logging.getLogger(__name__).debug("model_selector.load_default_failed: %s", e)
     return None
@@ -320,7 +321,7 @@ def _build_options_with_ollama(
                 from brain.capabilities import get_capabilities
                 caps = get_capabilities("ollama", meta.model_id)
                 cap_hint = "tools ✓" if caps.supports_tools else "chat only"
-            except Exception:
+            except (OSError, ValueError, RuntimeError, AttributeError):
                 cap_hint = ""
             base_desc = meta.meta_line
             description = f"{base_desc} · {cap_hint}" if base_desc else cap_hint
@@ -415,7 +416,7 @@ def build_llm_client_for_model(
             base_url=base_url_map.get(option.provider),
         )
         return ResilientLLMClient(primary=primary, fallbacks=[]), None
-    except Exception as e:
+    except (OSError, ValueError, RuntimeError, AttributeError) as e:
         return None, str(e)
 
 
@@ -443,7 +444,7 @@ def _read_key(fd: int) -> str:
             if seq in ("[5", "[6"):
                 sys.stdin.read(1)
                 return "pageup" if seq == "[5" else "pagedown"
-        except Exception:
+        except (OSError, ValueError, RuntimeError, AttributeError):
             pass  # non-blocking; ESC without a sequence suffix is fine
         return "esc"
     if ch in ("\r", "\n"): return "enter"
@@ -479,7 +480,7 @@ async def _read_key_async(fd: int) -> str:
         # Guard: remove reader if still registered (e.g. on cancellation)
         try:
             loop.remove_reader(fd)
-        except Exception:
+        except (OSError, ValueError, RuntimeError, AttributeError):
             pass  # may already be removed on cancellation — safe to ignore
 
     # fd is readable — read first byte using os.read (non-buffered)
@@ -637,7 +638,7 @@ def _render_selector(
                 caps = get_capabilities(opt.provider, opt.model_id)
                 if not caps.supports_tools:
                     tags += f" {_DIM}[chat only]{_R}"; tv += 11
-            except Exception as _cap_err:
+            except (NeuralClawError, AttributeError, ValueError) as _cap_err:
                 import logging as _logging
                 _logging.getLogger(__name__).debug("model_selector.caps_check_failed: %s", _cap_err)
 
@@ -806,7 +807,7 @@ async def run_model_selector(
                 draw_ui()
             except asyncio.CancelledError:
                 pass  # expected on cancellation
-            except Exception as _watch_err:
+            except (OSError, RuntimeError, AttributeError) as _watch_err:
                 import logging as _logging
                 _logging.getLogger(__name__).debug("model_selector.ollama_watcher_failed: %s", _watch_err)
 
@@ -828,7 +829,7 @@ async def run_model_selector(
                     # Update module-level cache
                     global MODEL_OPTIONS
                     MODEL_OPTIONS = list(options)
-                except Exception as _refresh_err:
+                except (OSError, RuntimeError, AttributeError) as _refresh_err:
                     import logging as _logging
                     _logging.getLogger(__name__).debug(
                         "model_selector.ollama_refresh_failed: %s", _refresh_err
@@ -896,7 +897,7 @@ async def run_model_selector(
             import fcntl as _fcntl, os as _os2
             fl = _fcntl.fcntl(fd, _fcntl.F_GETFL)
             _fcntl.fcntl(fd, _fcntl.F_SETFL, fl & ~_os2.O_NONBLOCK)
-        except Exception:
+        except (OSError, ValueError, RuntimeError, AttributeError):
             pass  # non-POSIX environment or already restored
         termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
         sys.stdout.write("\r\n")

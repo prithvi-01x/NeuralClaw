@@ -81,7 +81,10 @@ class WebSearchSkill(SkillBase):
                 skill_name=self.manifest.name, skill_call_id=call_id,
                 output={"query": query, "result_count": len(results), "results": results},
             )
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError) as e:
+            return SkillResult.fail(self.manifest.name, call_id, f"{type(e).__name__}: {e}", type(e).__name__)
+        except BaseException as e:
+            # Catch httpx errors and other third-party network exceptions
             return SkillResult.fail(self.manifest.name, call_id, f"{type(e).__name__}: {e}", type(e).__name__)
 
 

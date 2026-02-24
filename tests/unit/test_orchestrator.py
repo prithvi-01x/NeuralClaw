@@ -31,19 +31,10 @@ _ROOT = Path(__file__).parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-# ── mock heavy deps before importing anything that needs them ─────────────────
-import types as _types
-for _mod in ["aiosqlite", "chromadb", "sentence_transformers", "structlog"]:
-    if _mod not in sys.modules:
-        sys.modules[_mod] = _types.ModuleType(_mod)
-
-# structlog needs a get_logger stub
-_structlog = sys.modules["structlog"]
-_structlog.get_logger = lambda *a, **kw: MagicMock()  # type: ignore
-_structlog.contextvars = _types.ModuleType("structlog.contextvars")
-_structlog.contextvars.bind_contextvars = lambda **kw: None  # type: ignore
-_structlog.contextvars.unbind_contextvars = lambda *a: None  # type: ignore
-_structlog.contextvars.clear_contextvars = lambda: None  # type: ignore
+# ── structlog get_logger stub (avoids real structlog config requirements) ──────
+import structlog as _structlog_mod
+_structlog_mod.get_logger = lambda *a, **kw: MagicMock()  # type: ignore
+# ───────────────────────────────────────────────────────────────
 
 from agent.orchestrator import TurnResult, TurnStatus
 from agent.executor import Executor

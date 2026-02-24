@@ -35,7 +35,7 @@ try:
     from observability.logger import get_logger as _get_logger
     _log_raw = _get_logger(__name__)
     _STRUCTLOG = True
-except Exception:
+except ImportError:
     import logging as _logging
     _log_raw = _logging.getLogger(__name__)
     _STRUCTLOG = False
@@ -149,7 +149,7 @@ class SkillLoader:
 
         try:
             spec.loader.exec_module(module)  # type: ignore[union-attr]
-        except Exception as e:
+        except (ImportError, SyntaxError, AttributeError, TypeError, ValueError, RuntimeError, OSError) as e:
             if strict:
                 # Fail loudly — re-raise so the agent refuses to start with a
                 # broken skill environment rather than silently losing tools.

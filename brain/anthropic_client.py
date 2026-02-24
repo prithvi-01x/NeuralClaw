@@ -123,8 +123,8 @@ class AnthropicClient(BaseLLMClient):
             return True
         except anthropic.AuthenticationError:
             return False
-        except Exception as e:
-            log.warning("anthropic.health_check.failed", error=str(e))
+        except (OSError, RuntimeError, AttributeError) as e:
+            log.warning("anthropic.health_check.failed", error=str(e), error_type=type(e).__name__)
             return False
 
     # ── Private helpers ───────────────────────────────────────────────────────

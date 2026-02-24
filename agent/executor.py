@@ -132,26 +132,25 @@ class Executor:
                 )
 
         # ── 2. Confirmation callback ──────────────────────────────────────────
-        async def _on_confirm(decision) -> bool:
+        async def _on_confirm(confirm_req) -> bool:
             from agent.response_synthesizer import ResponseSynthesizer
-            future = session.register_confirmation(decision.tool_call_id)
+            future = session.register_confirmation(confirm_req.skill_call_id)
             if on_response:
                 synth = ResponseSynthesizer()
-                on_response(synth.confirmation_request(decision, btc.arguments))
+                on_response(synth.confirmation_request(confirm_req))
             try:
                 return await asyncio.wait_for(future, timeout=120.0)
             except asyncio.TimeoutError:
                 log.warning(
                     "executor.confirm_timeout",
-                    tool_call_id=decision.tool_call_id,
+                    tool_call_id=confirm_req.skill_call_id,
                 )
-                session.cancel_confirmation(decision.tool_call_id)
+                session.cancel_confirmation(confirm_req.skill_call_id)
                 return False
             except asyncio.CancelledError:
-                # Session.cancel() cancelled the future — treat as denied
                 log.info(
                     "executor.confirm_cancelled",
-                    tool_call_id=decision.tool_call_id,
+                    tool_call_id=confirm_req.skill_call_id,
                 )
                 return False
 

@@ -467,7 +467,7 @@ class TestOllamaClient:
 
     @pytest.mark.asyncio
     async def test_health_check_failure(self, client):
-        client._raw_client.models.list = AsyncMock(side_effect=Exception("connection refused"))
+        client._raw_client.models.list = AsyncMock(side_effect=OSError("connection refused"))
         assert await client.health_check() is False
 
     @pytest.mark.asyncio
@@ -515,7 +515,7 @@ class TestOpenRouterClient:
 
     @pytest.mark.asyncio
     async def test_health_check_failure(self, client):
-        client._inner._client.models.list = AsyncMock(side_effect=Exception("network error"))
+        client._inner._client.models.list = AsyncMock(side_effect=OSError("network error"))
         assert await client.health_check() is False
 
 

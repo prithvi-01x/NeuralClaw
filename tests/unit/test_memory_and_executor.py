@@ -787,13 +787,16 @@ class TestExecutorDispatch:
         # Bus triggers on_confirm_needed via the native dispatch signature
         async def _bus_dispatch(skill_call, trust_level, on_confirm_needed=None, granted_capabilities=frozenset()):
             if on_confirm_needed is not None:
-                decision = MagicMock(spec=SafetyDecision)
-                decision.tool_name = "terminal"
-                decision.tool_call_id = "call-123"
-                decision.risk_level = RiskLevel.HIGH
-                decision.reason = "risky"
+                from skills.types import ConfirmationRequest, RiskLevel
+                confirm_req = ConfirmationRequest(
+                    skill_name="terminal",
+                    skill_call_id="call-123",
+                    risk_level=RiskLevel.HIGH,
+                    reason="risky",
+                    arguments={},
+                )
                 with patch("agent.executor.asyncio.wait_for", return_value=True):
-                    await on_confirm_needed(decision)
+                    await on_confirm_needed(confirm_req)
             return _make_tool_result()
 
         bus = AsyncMock()

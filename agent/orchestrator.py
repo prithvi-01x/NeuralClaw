@@ -342,7 +342,7 @@ class Orchestrator:
         if new_model_id and hasattr(new_client, "_refresh_capabilities"):
             try:
                 new_client._refresh_capabilities(new_model_id)
-            except Exception:
+            except (AttributeError, RuntimeError, OSError):
                 pass
 
         # Also propagate to inner primary for ResilientLLMClient
@@ -354,7 +354,7 @@ class Orchestrator:
                     inner._refresh_capabilities(new_model_id)
                     # Mirror the inner's supports_tools flag upward
                     new_client.supports_tools = getattr(inner, "supports_tools", True)
-                except Exception:
+                except (AttributeError, RuntimeError, OSError):
                     pass
 
         log.info(

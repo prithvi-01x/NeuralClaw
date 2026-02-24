@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Optional
 
 from brain.types import LLMResponse
-from skills.types import RiskLevel, SafetyDecision, SkillResult
+from skills.types import ConfirmationRequest, RiskLevel, SafetyDecision, SkillResult
 
 
 class ResponseKind(str, Enum):
@@ -88,10 +88,10 @@ class ResponseSynthesizer:
 
     # ── Confirmation ──────────────────────────────────────────────────────────
 
-    def confirmation_request(self, decision: SafetyDecision, tool_args: dict) -> AgentResponse:
-        risk_icon = {RiskLevel.HIGH: "⚠️", RiskLevel.CRITICAL: "🚨"}.get(decision.risk_level, "❓")
+    def confirmation_request(self, confirm_req: ConfirmationRequest) -> AgentResponse:
+        risk_icon = {RiskLevel.HIGH: "⚠️", RiskLevel.CRITICAL: "🚨"}.get(confirm_req.risk_level, "❓")
         args_lines = []
-        for k, v in tool_args.items():
+        for k, v in confirm_req.arguments.items():
             val = str(v)
             if len(val) > 100:
                 val = val[:100] + "…"
@@ -100,20 +100,20 @@ class ResponseSynthesizer:
 
         text = (
             f"{risk_icon} **Confirmation Required**\n\n"
-            f"Tool: `{decision.tool_name}`\n"
-            f"Risk: **{decision.risk_level.value}**\n"
-            f"Reason: {decision.reason}"
+            f"Tool: `{confirm_req.skill_name}`\n"
+            f"Risk: **{confirm_req.risk_level.value}**\n"
+            f"Reason: {confirm_req.reason}"
             f"{args_text}\n\n"
             f"Allow this action?"
         )
         return AgentResponse(
             kind=ResponseKind.CONFIRMATION,
             text=text,
-            tool_name=decision.tool_name,
-            tool_call_id=decision.tool_call_id,
-            risk_level=decision.risk_level,
+            tool_name=confirm_req.skill_name,
+            tool_call_id=confirm_req.skill_call_id,
+            risk_level=confirm_req.risk_level,
             is_final=False,
-            metadata={"reason": decision.reason},
+            metadata={"reason": confirm_req.reason},
         )
 
     # ── Plan / status ─────────────────────────────────────────────────────────

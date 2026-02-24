@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from brain.llm_client import BaseLLMClient
+from brain.llm_client import BaseLLMClient, LLMError
 from brain.types import LLMConfig, Message
+from exceptions import LLMConnectionError, LLMRateLimitError, LLMContextError, LLMInvalidRequestError
 from observability.logger import get_logger
+
+_LLM_ERRORS = (LLMError, LLMConnectionError, LLMRateLimitError, LLMContextError, LLMInvalidRequestError, OSError)
 
 log = get_logger(__name__)
 
@@ -91,8 +94,8 @@ class Reasoner:
         try:
             response = await self._llm.generate(messages=messages, config=self._config)
             return self._parse_verdict(response.content or "")
-        except Exception as e:
-            log.warning("reasoner.evaluate_failed", error=str(e))
+        except _LLM_ERRORS as e:
+            log.warning("reasoner.evaluate_failed", error=str(e), error_type=type(e).__name__)
             return EvalVerdict(proceed=True, confidence=0.5, reasoning="Reasoning unavailable.")
 
     async def think(self, question: str, context: str = "") -> str:
@@ -108,8 +111,8 @@ class Reasoner:
             reasoning = response.content or ""
             log.debug("reasoner.think", reasoning=reasoning[:150])
             return reasoning
-        except Exception as e:
-            log.warning("reasoner.think_failed", error=str(e))
+        except _LLM_ERRORS as e:
+            log.warning("reasoner.think_failed", error=str(e), error_type=type(e).__name__)
             return ""
 
     async def reflect(self, goal: str, steps_taken: list[str], outcome: str) -> str:
@@ -126,8 +129,8 @@ class Reasoner:
             lesson = (response.content or "").strip()
             log.debug("reasoner.reflect", lesson=lesson[:150])
             return lesson
-        except Exception as e:
-            log.warning("reasoner.reflect_failed", error=str(e))
+        except _LLM_ERRORS as e:
+            log.warning("reasoner.reflect_failed", error=str(e), error_type=type(e).__name__)
             return ""
 
     # ── Helpers ───────────────────────────────────────────────────────────────

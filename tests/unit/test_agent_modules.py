@@ -162,8 +162,9 @@ class TestContextBuilderMemoryBlock:
     @pytest.mark.asyncio
     async def test_memory_exception_returns_empty(self):
         from agent.context_builder import ContextBuilder
+        from exceptions import MemoryError as NeuralClawMemoryError
         mm = AsyncMock()
-        mm.build_memory_context = AsyncMock(side_effect=RuntimeError("DB down"))
+        mm.build_memory_context = AsyncMock(side_effect=NeuralClawMemoryError("DB down"))
         cb = ContextBuilder(mm, agent_name="Agent")
         result = await cb._build_memory_block("query", "sess-1")
         assert result == ""
@@ -456,8 +457,9 @@ class TestReasonerEvaluateToolCall:
     async def test_llm_failure_defaults_to_proceed(self):
         from agent.reasoner import Reasoner
         from brain.types import LLMConfig
+        from brain.llm_client import LLMError
         llm = AsyncMock()
-        llm.generate = AsyncMock(side_effect=Exception("oops"))
+        llm.generate = AsyncMock(side_effect=LLMError("oops"))
         r = Reasoner(llm, LLMConfig(model="test"))
         v = await r.evaluate_tool_call("terminal", {}, "Do it")
         assert v.proceed is True
@@ -489,8 +491,9 @@ class TestReasonerThink:
     async def test_llm_failure_returns_empty(self):
         from agent.reasoner import Reasoner
         from brain.types import LLMConfig
+        from brain.llm_client import LLMError
         llm = AsyncMock()
-        llm.generate = AsyncMock(side_effect=Exception("fail"))
+        llm.generate = AsyncMock(side_effect=LLMError("fail"))
         r = Reasoner(llm, LLMConfig(model="test"))
         result = await r.think("question")
         assert result == ""
@@ -509,8 +512,9 @@ class TestReasonerReflect:
     async def test_llm_failure_returns_empty(self):
         from agent.reasoner import Reasoner
         from brain.types import LLMConfig
+        from brain.llm_client import LLMError
         llm = AsyncMock()
-        llm.generate = AsyncMock(side_effect=Exception("fail"))
+        llm.generate = AsyncMock(side_effect=LLMError("fail"))
         r = Reasoner(llm, LLMConfig(model="test"))
         result = await r.reflect("Goal", [], "outcome")
         assert result == ""
@@ -603,47 +607,48 @@ class TestResponseSynthesizerConfirmation:
         from agent.response_synthesizer import ResponseSynthesizer
         return ResponseSynthesizer()
 
-    def _make_decision(self, risk_level_str: str = "HIGH"):
-        from skills.types import SafetyDecision, RiskLevel
-        decision = MagicMock(spec=SafetyDecision)
-        decision.tool_name = "terminal"
-        decision.tool_call_id = "call-123"
-        decision.risk_level = RiskLevel.HIGH if risk_level_str == "HIGH" else RiskLevel.CRITICAL
-        decision.reason = "Dangerous command"
-        return decision
+    def _make_confirmation_request(self, risk_level_str: str = "HIGH", arguments: dict = None):
+        from skills.types import ConfirmationRequest, RiskLevel
+        return ConfirmationRequest(
+            skill_name="terminal",
+            skill_call_id="call-123",
+            risk_level=RiskLevel.HIGH if risk_level_str == "HIGH" else RiskLevel.CRITICAL,
+            reason="Dangerous command",
+            arguments=arguments or {},
+        )
 
     def test_confirmation_kind(self):
         from agent.response_synthesizer import ResponseKind
         s = self._make_synth()
-        d = self._make_decision()
-        resp = s.confirmation_request(d, {"cmd": "rm -rf /"})
+        cr = self._make_confirmation_request(arguments={"cmd": "rm -rf /"})
+        resp = s.confirmation_request(cr)
         assert resp.kind == ResponseKind.CONFIRMATION
         assert resp.is_final is False
         assert resp.tool_call_id == "call-123"
 
     def test_confirmation_includes_tool_args(self):
         s = self._make_synth()
-        d = self._make_decision()
-        resp = s.confirmation_request(d, {"path": "/tmp/file"})
+        cr = self._make_confirmation_request(arguments={"path": "/tmp/file"})
+        resp = s.confirmation_request(cr)
         assert "path" in resp.text
 
     def test_critical_risk_icon(self):
         s = self._make_synth()
-        d = self._make_decision("CRITICAL")
-        resp = s.confirmation_request(d, {})
+        cr = self._make_confirmation_request("CRITICAL")
+        resp = s.confirmation_request(cr)
         assert "🚨" in resp.text
 
     def test_high_risk_icon(self):
         s = self._make_synth()
-        d = self._make_decision("HIGH")
-        resp = s.confirmation_request(d, {})
+        cr = self._make_confirmation_request("HIGH")
+        resp = s.confirmation_request(cr)
         assert "⚠️" in resp.text
 
     def test_long_arg_value_clipped(self):
         s = self._make_synth()
-        d = self._make_decision()
         long_val = "x" * 200
-        resp = s.confirmation_request(d, {"key": long_val})
+        cr = self._make_confirmation_request(arguments={"key": long_val})
+        resp = s.confirmation_request(cr)
         assert "…" in resp.text
 
 

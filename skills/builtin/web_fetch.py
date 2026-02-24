@@ -128,7 +128,10 @@ class WebFetchSkill(SkillBase):
                 skill_name=self.manifest.name, skill_call_id=call_id,
                 output=_UNTRUSTED_PREFIX + str(output) + _UNTRUSTED_SUFFIX,
             )
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError) as e:
+            return SkillResult.fail(self.manifest.name, call_id, f"{type(e).__name__}: {e}", type(e).__name__)
+        except BaseException as e:
+            # Catch httpx errors and other third-party network exceptions
             return SkillResult.fail(self.manifest.name, call_id, f"{type(e).__name__}: {e}", type(e).__name__)
 
 

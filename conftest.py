@@ -3,6 +3,15 @@ Unit test conftest — isolate API key environment variables so that
 TestValidateAll tests are not affected by real keys in the developer's
 or CI environment.
 """
+# ── Strip system dist-packages from sys.path ──────────────────────────────────
+# On some Linux setups the system Python's dist-packages directory leaks into
+# the venv's sys.path, causing a stale system-installed httpx (or other
+# packages) to shadow the venv's correctly pinned versions.  We remove any
+# path entry that contains "dist-packages" before any project imports happen.
+import sys
+sys.path = [p for p in sys.path if "dist-packages" not in p]
+# ─────────────────────────────────────────────────────────────────────────────
+
 import pytest
 
 _API_KEY_ENV_VARS = [

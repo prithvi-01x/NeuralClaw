@@ -364,6 +364,6 @@ async def probe_ollama_tool_support(model_id: str, base_url: str = "http://local
         supports = any(ind.lower() in combined for ind in tool_indicators)
         return supports
 
-    except Exception:
+    except (OSError, RuntimeError, ValueError, AttributeError):
         # If we can't probe, fall back to static pattern matching
         return known.supports_tools

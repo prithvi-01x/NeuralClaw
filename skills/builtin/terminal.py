@@ -106,7 +106,7 @@ class TerminalExecSkill(SkillBase):
                     f"Command timed out after {timeout_seconds}s",
                     "SkillTimeoutError",
                 )
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             return SkillResult.fail(self.manifest.name, call_id, f"Failed to start: {e}", type(e).__name__)
 
         stdout = stdout_b.decode("utf-8", errors="replace")

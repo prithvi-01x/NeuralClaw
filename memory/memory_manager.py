@@ -40,6 +40,34 @@ from exceptions import NeuralClawError, MemoryError as MemorySubsystemError
 log = get_logger(__name__)
 
 
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ContextBundle:
+    """
+    Typed contract for the full memory context returned to the orchestrator.
+
+    Replaces the previous untyped string returned by build_memory_context().
+    The plain-text `summary` field is still generated for LLM injection;
+    the structured fields let callers (tests, tools) introspect results
+    without string parsing.
+
+    Fields:
+        summary:      Ready-to-inject text block for the LLM system prompt.
+        long_term:    Per-collection semantic search hits (collection → entries).
+        recent_episodes: Most recent episodic memories (up to 3).
+        empty:        True when no relevant memories were found.
+    """
+    summary: str
+    long_term: dict[str, list[MemoryEntry]] = field(default_factory=dict)
+    recent_episodes: list[Episode] = field(default_factory=list)
+
+    @property
+    def empty(self) -> bool:
+        return not self.summary and not self.long_term and not self.recent_episodes
+
+
 class MemoryManager:
     """
     Unified interface over all NeuralClaw memory subsystems.
@@ -280,25 +308,73 @@ class MemoryManager:
 
         Searches long-term memory for context relevant to the current query,
         then formats it as a readable block the LLM can reference.
+
+        For a fully-typed result with structured fields, use recall_all() instead.
+        """
+        bundle = await self.recall_all(query=query, session_id=session_id, n_long_term=n_long_term)
+        return bundle.summary
+
+    async def recall_all(
+        self,
+        query: str,
+        session_id: str,
+        n_long_term: int = 5,
+        n_episodes: int = 3,
+    ) -> ContextBundle:
+        """
+        Retrieve all relevant memory context and return a typed ContextBundle.
+
+        This is the canonical typed contract for memory retrieval — it
+        replaces the previous unstructured string returned by build_memory_context()
+        while keeping backward compatibility via the build_memory_context() shim.
+
+        Args:
+            query:       The current user message / goal to search against.
+            session_id:  Current session ID (used for episode scoping).
+            n_long_term: Max results per long-term memory collection.
+            n_episodes:  Max recent episodes to include.
+
+        Returns:
+            ContextBundle with summary text ready for LLM injection,
+            plus structured long_term and recent_episodes fields.
         """
         self._require_init()
-        # Prune stale TaskMemory objects from prior turns (max 1 hour retention).
         self._task_store.prune_old(max_age_seconds=3600)
 
-        results = await self.search_all(query, n_per_collection=2)
-        if not results:
-            return ""
+        # 1. Long-term semantic search
+        long_term_results = await self.search_all(query, n_per_collection=n_long_term)
 
-        lines = ["## Relevant Memory\n"]
-        for collection, entries in results.items():
-            for entry in entries:
-                if entry.relevance_score > self._relevance_threshold:
-                    lines.append(f"[{collection}] {entry.text[:300]}")
+        # 2. Recent episodes (non-blocking — episodic failures don't kill context)
+        recent_episodes: list[Episode] = []
+        try:
+            recent_episodes = await self.episodic.get_recent_episodes(n=n_episodes)
+        except (NeuralClawError, MemorySubsystemError, OSError) as e:
+            log.warning("memory_manager.recall_episodes_failed", error=str(e))
 
-        if len(lines) == 1:
-            return ""
+        # 3. Build the summary text block
+        lines: list[str] = []
+        threshold = self._relevance_threshold
 
-        return "\n".join(lines)
+        if long_term_results:
+            lines.append("## Relevant Memory\n")
+            for collection, entries in long_term_results.items():
+                for entry in entries:
+                    if entry.relevance_score > threshold:
+                        lines.append(f"[{collection}] {entry.text[:300]}")
+
+        if recent_episodes:
+            lines.append("\n## Recent Episodes")
+            for ep in recent_episodes:
+                outcome_icon = "✅" if ep.outcome == "success" else "❌"
+                lines.append(f"{outcome_icon} {ep.goal} → {ep.outcome}")
+
+        summary = "\n".join(lines) if len(lines) > 1 else ""
+
+        return ContextBundle(
+            summary=summary,
+            long_term=long_term_results,
+            recent_episodes=recent_episodes,
+        )
 
     # ── Factory ───────────────────────────────────────────────────────────────
 

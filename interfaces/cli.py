@@ -62,6 +62,7 @@ from memory.memory_manager import MemoryManager
 from observability.logger import get_logger
 from safety.safety_kernel import SafetyKernel
 from skills.types import TrustLevel
+from exceptions import NeuralClawError, MemoryError as NeuralClawMemoryError, LLMError
 
 # Skill system — loads builtin + plugin skills at startup
 from pathlib import Path as _SkillPath
@@ -92,6 +93,9 @@ _HELP_TEXT = """
 | `/memory <query>` | Search long-term memory |
 | `/tools` | List all registered tools |
 | `/trust <low\\|medium\\|high>` | Set session trust level |
+| `/grant <capability>` | Grant a capability for this session (e.g. `fs:delete`) |
+| `/revoke <capability>` | Revoke a previously granted capability |
+| `/capabilities` | Show active capabilities for this session |
 | `/model` | Interactively switch the active LLM model |
 | `/compact` | Summarise old turns and compress context window |
 | `/usage` | Show token usage and estimated cost for this session |
@@ -171,7 +175,7 @@ class CLIInterface:
         # LLM client
         try:
             llm_client = LLMClientFactory.from_settings(self.settings)
-        except Exception as e:
+        except (LLMError, ValueError, KeyError, ImportError) as e:
             self.console.print(f"[red]❌ Failed to create LLM client: {e}[/]")
             sys.exit(1)
 
@@ -180,7 +184,7 @@ class CLIInterface:
         try:
             with self.console.status("[dim]Loading embedding model...[/]"):
                 await self._memory.init(load_embedder=True)
-        except Exception as e:
+        except (NeuralClawMemoryError, OSError, RuntimeError, ImportError) as e:
             self.console.print(f"[yellow]⚠ Memory init warning: {e}[/]")
             await self._memory.init(load_embedder=False)
 
@@ -337,6 +341,9 @@ class CLIInterface:
                 "/cancel":  lambda _: self._cmd_cancel(),
                 "/model":   lambda _: self._cmd_model(),
                 "/trust":   self._cmd_trust,
+                "/grant":   self._cmd_grant,
+                "/revoke":  self._cmd_revoke,
+                "/capabilities": lambda _: self._cmd_capabilities(),
                 "/memory":  self._cmd_memory,
                 "/run":     self._cmd_run,
                 "/ask":     self._cmd_ask,
@@ -437,7 +444,7 @@ class CLIInterface:
                 self.console.print(
                     f"[dim]   Tools: enabled · Vision: {'yes' if caps.supports_vision else 'no'}[/]"
                 )
-        except Exception as _cap_err:
+        except (NeuralClawError, AttributeError, ValueError) as _cap_err:
             log.debug("cli.capability_check_failed", error=str(_cap_err))
 
     async def _cmd_ask(self, message: str) -> None:
@@ -509,7 +516,7 @@ class CLIInterface:
         except RuntimeError as e:
             self.console.print(f"[red]Compact failed: {e}[/]")
             return
-        except Exception as e:
+        except (NeuralClawError, OSError) as e:
             self.console.print(f"[red]Compact error: {e}[/]")
             return
 
@@ -674,6 +681,89 @@ class CLIInterface:
         self.console.print(
             f"[{colour}]✓ Trust level set to {new_trust.value.upper()}[/]"
         )
+
+    async def _cmd_grant(self, capability: str) -> None:
+        """Grant a capability to the current session.
+
+        Usage: /grant <capability>
+        Example capabilities: fs:read  fs:write  fs:delete  net:fetch  shell:exec
+        """
+        capability = capability.strip()
+        if not capability:
+            self.console.print(
+                "[yellow]Usage: /grant <capability>[/]\n"
+                "[dim]Examples: fs:read  fs:write  fs:delete  net:fetch  shell:exec[/]"
+            )
+            return
+
+        self._session.grant_capability(capability)
+        self.console.print(
+            f"[green]✓ Capability '[bold]{capability}[/bold]' granted for this session.[/]\n"
+            f"[dim]Active capabilities: {sorted(self._session.granted_capabilities)}[/]"
+        )
+
+    async def _cmd_revoke(self, capability: str) -> None:
+        """Revoke a previously granted capability from the current session.
+
+        Usage: /revoke <capability>
+        """
+        capability = capability.strip()
+        if not capability:
+            self.console.print("[yellow]Usage: /revoke <capability>[/]")
+            return
+
+        if capability not in self._session.granted_capabilities:
+            self.console.print(
+                f"[yellow]Capability '{capability}' is not currently granted.[/]\n"
+                f"[dim]Active capabilities: {sorted(self._session.granted_capabilities)}[/]"
+            )
+            return
+
+        self._session.revoke_capability(capability)
+        self.console.print(
+            f"[red]✓ Capability '[bold]{capability}[/bold]' revoked.[/]\n"
+            f"[dim]Active capabilities: {sorted(self._session.granted_capabilities)}[/]"
+        )
+
+    def _cmd_capabilities(self) -> None:
+        """Show all granted capabilities for this session."""
+        active = sorted(self._session.granted_capabilities)
+
+        # All known capabilities across builtin skills
+        _ALL_CAPS = {
+            "fs:read":   "Read files within allowed paths",
+            "fs:write":  "Write and append files within allowed paths",
+            "fs:delete": "Delete files (requires explicit grant)",
+            "shell:run": "Execute whitelisted terminal commands",
+            "net:fetch": "Fetch URLs and perform web searches",
+        }
+
+        table = Table(
+            title="Session Capabilities",
+            box=box.ROUNDED,
+            border_style="dim",
+        )
+        table.add_column("Capability", style="cyan", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Description")
+
+        for cap, desc in _ALL_CAPS.items():
+            if cap in active:
+                status = "[green]✓ granted[/]"
+            else:
+                status = "[dim]— not granted[/]"
+            table.add_row(cap, status, desc)
+
+        # Show any extra caps that aren't in the known list
+        extras = [c for c in active if c not in _ALL_CAPS]
+        for cap in extras:
+            table.add_row(cap, "[green]✓ granted[/]", "[dim](custom)[/]")
+
+        self.console.print(table)
+        if not active:
+            self.console.print(
+                "[dim]No capabilities granted. Use /grant <capability> to add one.[/]"
+            )
 
     async def _cmd_memory(self, query: str) -> None:
         """Search long-term memory."""
@@ -849,7 +939,7 @@ class CLIInterface:
         if self._memory:
             try:
                 await self._memory.close()
-            except Exception as _close_err:
+            except (NeuralClawMemoryError, OSError, RuntimeError) as _close_err:
                 log.debug("cli.memory_close_failed", error=str(_close_err))
         log.info("cli.shutdown", session_id=self._session.id if self._session else None)
 

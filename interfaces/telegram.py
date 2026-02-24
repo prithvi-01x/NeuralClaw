@@ -34,6 +34,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+from telegram.error import TelegramError, NetworkError, BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -42,6 +43,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from exceptions import NeuralClawError, MemoryError as NeuralClawMemoryError, LLMError
 
 from agent.orchestrator import Orchestrator
 from agent.response_synthesizer import AgentResponse, ResponseKind
@@ -150,6 +152,9 @@ class TelegramBot:
         app.add_handler(CommandHandler("memory", self._cmd_memory))
         app.add_handler(CommandHandler("tools", self._cmd_tools))
         app.add_handler(CommandHandler("trust", self._cmd_trust))
+        app.add_handler(CommandHandler("grant", self._cmd_grant))
+        app.add_handler(CommandHandler("revoke", self._cmd_revoke))
+        app.add_handler(CommandHandler("capabilities", self._cmd_capabilities))
         app.add_handler(CommandHandler("cancel", self._cmd_cancel))
         app.add_handler(CommandHandler("clear", self._cmd_clear))
         app.add_handler(CommandHandler("model", self._cmd_model))
@@ -296,6 +301,9 @@ class TelegramBot:
             "/memory `<query>` — Search long-term memory\n"
             "/tools — List registered tools\n"
             "/trust `low|medium|high` — Set trust level\n"
+            "/grant `<capability>` — Grant a capability (e.g. `fs:delete`)\n"
+            "/revoke `<capability>` — Revoke a granted capability\n"
+            "/capabilities — Show active session capabilities\n"
             "/cancel — Cancel running task\n"
             "/clear — Clear conversation history\n"
             "/help — This message\n\n"
@@ -331,7 +339,7 @@ class TelegramBot:
 
         try:
             await thinking_msg.delete()
-        except Exception as _del_err:
+        except (TelegramError, NetworkError, BadRequest) as _del_err:
             log.debug("telegram.delete_thinking_msg_failed", error=str(_del_err))
 
         await self._send_response(chat_id, turn_result.response, update)
@@ -391,7 +399,7 @@ class TelegramBot:
         results = await self._memory.search_all(query, n_per_collection=3)
         try:
             await thinking.delete()
-        except Exception as _del_err:
+        except (TelegramError, NetworkError, BadRequest) as _del_err:
             log.debug("telegram.delete_thinking_msg_failed", error=str(_del_err))
 
         if not results:
@@ -464,6 +472,86 @@ class TelegramBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
+    async def _cmd_grant(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._auth_check(update):
+            return
+        capability = (ctx.args[0] if ctx.args else "").strip()
+        if not capability:
+            await update.message.reply_text(
+                "Usage: `/grant <capability>`\n"
+                "Examples: `fs:read`  `fs:write`  `fs:delete`  `net:fetch`  `shell:exec`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        chat_id = update.effective_chat.id
+        session = self._get_session(chat_id)
+        session.grant_capability(capability)
+        active = sorted(session.granted_capabilities)
+        await update.message.reply_text(
+            f"✅ Capability `{capability}` granted for this session.\n"
+            f"_Active: {', '.join(active) if active else 'none'}_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def _cmd_revoke(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._auth_check(update):
+            return
+        capability = (ctx.args[0] if ctx.args else "").strip()
+        if not capability:
+            await update.message.reply_text("Usage: `/revoke <capability>`", parse_mode=ParseMode.MARKDOWN)
+            return
+        chat_id = update.effective_chat.id
+        session = self._get_session(chat_id)
+        if capability not in session.granted_capabilities:
+            active = sorted(session.granted_capabilities)
+            await update.message.reply_text(
+                f"⚠️ `{capability}` is not currently granted.\n"
+                f"_Active: {', '.join(active) if active else 'none'}_",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+        session.revoke_capability(capability)
+        active = sorted(session.granted_capabilities)
+        await update.message.reply_text(
+            f"✅ Capability `{capability}` revoked.\n"
+            f"_Active: {', '.join(active) if active else 'none'}_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def _cmd_capabilities(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._auth_check(update):
+            return
+        chat_id = update.effective_chat.id
+        session = self._get_session(chat_id)
+        active = sorted(session.granted_capabilities)
+
+        _ALL_CAPS = {
+            "fs:read":   "Read files within allowed paths",
+            "fs:write":  "Write and append files",
+            "fs:delete": "Delete files",
+            "shell:run": "Execute whitelisted terminal commands",
+            "net:fetch": "Fetch URLs and web searches",
+        }
+
+        lines = ["🔐 *Session Capabilities*\n"]
+        for cap, desc in _ALL_CAPS.items():
+            icon = "✅" if cap in active else "⬜"
+            lines.append(f"{icon} `{cap}` — {desc}")
+
+        extras = [c for c in active if c not in _ALL_CAPS]
+        for cap in extras:
+            lines.append(f"✅ `{cap}` — _(custom)_")
+
+        if not active:
+            lines.append("\n_No capabilities granted. Use /grant \\<capability\\> to add one._")
+        else:
+            lines.append(f"\n_Use /revoke \\<capability\\> to remove one._")
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
     async def _cmd_cancel(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._auth_check(update):
             return
@@ -495,7 +583,7 @@ class TelegramBot:
             keyboard = await build_telegram_model_keyboard_async(self._settings, current_key)
             text     = format_telegram_model_list(self._settings, current_key)
             await loading_msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-        except Exception:
+        except (OSError, RuntimeError, AttributeError):
             # Fallback to sync (no live Ollama data)
             text     = format_telegram_model_list(self._settings, current_key)
             keyboard = build_telegram_model_keyboard(self._settings, current_key)
@@ -596,7 +684,7 @@ class TelegramBot:
                     cap_note = "\n⚠️ _Chat-only mode — tools not supported by this model._"
                 else:
                     cap_note = "\n✅ _Tool calling: enabled_"
-            except Exception as _cap_err:
+            except (NeuralClawError, AttributeError, ValueError) as _cap_err:
                 log.debug("telegram.capability_check_failed", error=str(_cap_err))
 
             await query.edit_message_text(
@@ -716,7 +804,7 @@ class TelegramBot:
                     parse_mode=parse_mode,
                     reply_markup=reply_markup if i == len(chunks) - 1 else None,
                 )
-            except Exception as e:
+            except (TelegramError, NetworkError, BadRequest) as e:
                 log.warning("telegram.send_failed", error=str(e), chat_id=chat_id)
                 # Fallback: send as plain text
                 try:
@@ -724,7 +812,7 @@ class TelegramBot:
                         chat_id=chat_id,
                         text=_strip_markdown(chunk)[:_MAX_MESSAGE_LEN],
                     )
-                except Exception as _send_err:
+                except (TelegramError, NetworkError, OSError) as _send_err:
                     log.warning("telegram.send_plaintext_fallback_failed", error=str(_send_err), chat_id=chat_id)
 
 

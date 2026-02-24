@@ -127,13 +127,14 @@ class Embedder:
                 model=self.model_name,
                 dimension=self.dimension(),
             )
-        except Exception as e:
+        except (OSError, RuntimeError, ImportError, ValueError, AttributeError) as e:
             if self.model_name != _FALLBACK_MODEL:
                 log.warning(
                     "embedder.load_failed_trying_fallback",
                     model=self.model_name,
                     fallback=_FALLBACK_MODEL,
                     error=str(e),
+                    error_type=type(e).__name__,
                 )
                 self.model_name = _FALLBACK_MODEL
                 self._model = await loop.run_in_executor(

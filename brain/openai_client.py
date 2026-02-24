@@ -113,8 +113,8 @@ class OpenAIClient(BaseLLMClient):
         try:
             await self._client.models.list()
             return True
-        except Exception as e:
-            log.warning("openai.health_check.failed", error=str(e))
+        except (OSError, RuntimeError, AttributeError) as e:
+            log.warning("openai.health_check.failed", error=str(e), error_type=type(e).__name__)
             return False
 
     # ── Private helpers ───────────────────────────────────────────────────────

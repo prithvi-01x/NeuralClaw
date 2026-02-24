@@ -51,7 +51,7 @@ _BLOCKED_PATH_PREFIXES: tuple[str, ...] = (
 def _is_blocked_system_path(p: str) -> bool:
     try:
         resolved = str(Path(p).expanduser().resolve())
-    except Exception:
+    except (ValueError, OSError):
         return False
     return any(
         resolved == prefix or resolved.startswith(prefix + "/")

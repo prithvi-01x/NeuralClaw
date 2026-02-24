@@ -93,9 +93,9 @@ def bootstrap(args: argparse.Namespace):
             file=sys.stderr,
         )
         sys.exit(1)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — catches yaml.YAMLError, FileNotFoundError, etc.
         print(
-            f"\n❌  Failed to load config: {exc}\n",
+            f"\n❌  Failed to load config: {type(exc).__name__}: {exc}\n",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -190,7 +190,7 @@ async def _run_telegram(settings, log) -> None:
 
     try:
         from interfaces.telegram import run_telegram
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError) as e:
         log.exception("telegram.import_failed", error=str(e))
         print("\n❌ Failed to import Telegram interface.\n", file=sys.stderr)
         raise
@@ -201,8 +201,8 @@ async def _run_telegram(settings, log) -> None:
         await run_telegram(settings=settings, log=log)
     except KeyboardInterrupt:
         log.info("telegram.interrupted")
-    except Exception as e:
-        log.exception("telegram.crashed", error=str(e))
+    except (OSError, RuntimeError) as e:
+        log.exception("telegram.crashed", error=str(e), error_type=type(e).__name__)
         raise
 
 

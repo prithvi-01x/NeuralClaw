@@ -85,6 +85,6 @@ class OpenRouterClient(BaseLLMClient):
         try:
             await self._inner._client.models.list()
             return True
-        except Exception as e:
-            log.warning("openrouter.health_check.failed", error=str(e))
+        except (OSError, RuntimeError, AttributeError) as e:
+            log.warning("openrouter.health_check.failed", error=str(e), error_type=type(e).__name__)
             return False

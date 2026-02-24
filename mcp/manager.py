@@ -145,8 +145,8 @@ class MCPManager:
                 is_error=True,
                 server_name=server_name,
             )
-        except Exception as e:
-            log.error("mcp.call_tool.error", tool=tool_name, server=server_name, error=str(e))
+        except (MCPConnectionError, OSError, RuntimeError, ValueError) as e:
+            log.error("mcp.call_tool.error", tool=tool_name, server=server_name, error=str(e), error_type=type(e).__name__)
             return MCPToolResult(
                 tool_call_id="",
                 name=tool_name,
@@ -203,8 +203,8 @@ class MCPManager:
         # Fetch and register tools
         try:
             schemas = await transport.list_tools()
-        except Exception as e:
-            log.warning("mcp.server.list_tools_failed", server=config.name, error=str(e))
+        except (MCPConnectionError, OSError, RuntimeError, ValueError) as e:
+            log.warning("mcp.server.list_tools_failed", server=config.name, error=str(e), error_type=type(e).__name__)
             return
 
         for schema in schemas:

@@ -92,18 +92,18 @@ class TestTraceContext:
         from observability.trace import TraceContext
         ctx = TraceContext(trace_id="trc_abc")
         ctx.new_turn()
-        with patch("structlog.contextvars.bind_contextvars") as mock_bind:
+        with patch("observability.trace._scv.bind_contextvars") as mock_bind:
             ctx.bind()
-            kwargs = mock_bind.call_args[1]
+            kwargs = mock_bind.call_args.kwargs
             assert kwargs["trace_id"] == "trc_abc"
             assert "turn_id" in kwargs
 
     def test_bind_without_turn_omits_turn_id(self):
         from observability.trace import TraceContext
         ctx = TraceContext(trace_id="trc_abc")
-        with patch("structlog.contextvars.bind_contextvars") as mock_bind:
+        with patch("observability.trace._scv.bind_contextvars") as mock_bind:
             ctx.bind()
-            kwargs = mock_bind.call_args[1]
+            kwargs = mock_bind.call_args.kwargs
             assert "turn_id" not in kwargs
 
     def test_clear_calls_unbind(self):

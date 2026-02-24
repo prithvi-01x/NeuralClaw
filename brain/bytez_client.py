@@ -136,7 +136,10 @@ class BytezClient(BaseLLMClient):
                 model_handle.run,
                 input_msgs,
             )
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
+            raise LLMConnectionError(str(e), provider="bytez") from e
+        except BaseException as e:
+            # Bytez sync SDK raises non-standard exceptions via run_in_executor
             raise LLMConnectionError(str(e), provider="bytez") from e
 
         if results.error:
@@ -175,6 +178,6 @@ class BytezClient(BaseLLMClient):
                 [{"role": "user", "content": "ping"}],
             )
             return res.error is None
-        except Exception as e:
-            log.warning("bytez.health_check.failed", error=str(e))
+        except (OSError, RuntimeError, AttributeError) as e:
+            log.warning("bytez.health_check.failed", error=str(e), error_type=type(e).__name__)
             return False

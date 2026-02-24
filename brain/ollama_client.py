@@ -167,8 +167,8 @@ class OllamaClient(BaseLLMClient):
             model_names = [m.id for m in models.data]
             log.debug("ollama.health_check.ok", available_models=model_names)
             return True
-        except Exception as e:
-            log.warning("ollama.health_check.failed", error=str(e))
+        except (OSError, RuntimeError, AttributeError) as e:
+            log.warning("ollama.health_check.failed", error=str(e), error_type=type(e).__name__)
             return False
 
     async def list_models(self) -> list[str]:
@@ -176,6 +176,6 @@ class OllamaClient(BaseLLMClient):
         try:
             models = await self._raw_client.models.list()
             return [m.id for m in models.data]
-        except Exception as e:
-            log.warning("ollama.list_models.failed", error=str(e))
+        except (OSError, RuntimeError, AttributeError) as e:
+            log.warning("ollama.list_models.failed", error=str(e), error_type=type(e).__name__)
             return []

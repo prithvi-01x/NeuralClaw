@@ -172,8 +172,8 @@ class LLMClientFactory:
                     base_url=base_url_map.get(fp),
                 )
                 fallbacks.append(fb)
-            except Exception:
-                pass  # missing key etc — skip silently
+            except (ValueError, KeyError, TypeError, ImportError):
+                pass  # missing key, unknown provider, etc — skip silently
 
         # Read retry config
         retry_cfg = getattr(settings.llm, "retry", None)
