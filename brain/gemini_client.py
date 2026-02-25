@@ -81,7 +81,9 @@ class GeminiClient(BaseLLMClient):
                 contents=contents,
                 config=gen_config,
             )
-        except Exception as e:
+        except LLMError:
+            raise
+        except BaseException as e:
             self._raise_normalised(e)
 
         result = self._from_provider_response(response, config.model)
@@ -97,8 +99,11 @@ class GeminiClient(BaseLLMClient):
         try:
             models = self._client.models.list()
             return any(True for _ in models)
-        except Exception as e:
+        except LLMError as e:
             log.warning("gemini.health_check.failed", error=str(e))
+            return False
+        except BaseException as e:
+            log.warning("gemini.health_check.failed", error=str(e), error_type=type(e).__name__)
             return False
 
     # ── Private helpers ───────────────────────────────────────────────────────

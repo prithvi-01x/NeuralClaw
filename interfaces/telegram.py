@@ -872,8 +872,8 @@ async def run_telegram(settings: Settings, log) -> None:
         started = True
     except KeyboardInterrupt:
         log.info("telegram_bot.interrupted")
-    except Exception as e:
-        log.error("telegram_bot.start_failed", error=str(e))
+    except (OSError, RuntimeError) as e:
+        log.error("telegram_bot.start_failed", error=str(e), error_type=type(e).__name__)
         print(f"\n\u274c Failed to connect to Telegram: {e}")
         print("   Check your TELEGRAM_BOT_TOKEN and network/proxy settings.")
         return

@@ -84,8 +84,11 @@ class OllamaClient(BaseLLMClient):
                 supports_tools = await probe_ollama_tool_support(model_id, self.base_url)
                 register_capabilities("ollama", model_id, supports_tools=supports_tools)
                 log.info("ollama.capability_probe_success", model=model_id, supports_tools=supports_tools)
-            except Exception as e:
+            except LLMError as e:
                 log.warning("ollama.capability_probe_failed", model=model_id, error=str(e))
+                # Will fall back to whatever get_capabilities returns below
+            except (httpx.HTTPError, OSError) as e:
+                log.warning("ollama.capability_probe_failed", model=model_id, error=str(e), error_type=type(e).__name__)
                 # Will fall back to whatever get_capabilities returns below
 
         caps = get_capabilities("ollama", model_id)

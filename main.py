@@ -87,7 +87,13 @@ def bootstrap(args: argparse.Namespace):
             file=sys.stderr,
         )
         sys.exit(1)
-    except Exception as exc:  # noqa: BLE001 — catches yaml.YAMLError, FileNotFoundError, etc.
+    except (FileNotFoundError, PermissionError, IsADirectoryError, OSError) as exc:
+        print(
+            f"\n❌  Failed to load config: {type(exc).__name__}: {exc}\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except (ValueError, TypeError) as exc:
         print(
             f"\n❌  Failed to load config: {type(exc).__name__}: {exc}\n",
             file=sys.stderr,
@@ -164,8 +170,15 @@ async def main() -> int:
                 file=sys.stderr,
             )
             return 1
-    except Exception as e:
-        log.error("neuralclaw.llm_init_failed", error=str(e))
+    except (ImportError, AttributeError, ValueError) as e:
+        log.error("neuralclaw.llm_init_failed", error=str(e), error_type=type(e).__name__)
+        print(
+            f"\n❌  Failed to initialize LLM provider '{settings.default_llm_provider}': {e}\n",
+            file=sys.stderr,
+        )
+        return 1
+    except OSError as e:
+        log.error("neuralclaw.llm_init_failed", error=str(e), error_type=type(e).__name__)
         print(
             f"\n❌  Failed to initialize LLM provider '{settings.default_llm_provider}': {e}\n",
             file=sys.stderr,
