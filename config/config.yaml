@@ -96,6 +96,28 @@ scheduler:
   timezone: "UTC"
   max_concurrent_tasks: 3
 
+voice:
+  enabled: true
+  # Faster-Whisper model size. Options: tiny, tiny.en, base, base.en, small, small.en, medium
+  # base.en is the recommended default: fast on CPU, accurate for English.
+  whisper_model: "base.en"
+  whisper_device: "cpu"         # cpu or cuda (cuda requires NVIDIA GPU + cuDNN)
+  # Path to a Piper .onnx voice model file.
+  # Download from: https://github.com/rhasspy/piper/releases
+  # Example: ~/.local/share/piper/en_US-lessac-medium.onnx
+  piper_model_path: ""
+  sample_rate: 16000            # must be 8000, 16000, 32000, or 48000
+  channels: 1
+  vad_aggressiveness: 2         # 0-3 (0=least aggressive, 3=most aggressive)
+  silence_duration_ms: 800      # ms of silence to mark end of utterance
+  max_utterance_s: 30           # hard cap on utterance length
+  min_utterance_ms: 300         # clips shorter than this are ignored
+  # Phase G — hotword / wake word
+  wake_word_enabled: false      # set true to enable always-on hotword detection
+  wake_word_model: "hey_mycroft" # openwakeword model name or path to .onnx
+  wake_sensitivity: 0.5         # 0.0–1.0; lower = more sensitive (more false positives)
+  mic_device_index: null        # null = system default mic
+
 logging:
   level: "INFO"
   log_dir: "./data/logs"

@@ -28,8 +28,7 @@ _TRUST_DESCRIPTIONS = {
     "high": "All actions execute without confirmation. Use with care.",
 }
 
-_SYSTEM_TEMPLATE = """\
-You are {agent_name}, a local-first autonomous AI agent running on the user's machine.
+_SYSTEM_TEMPLATE = """You are {agent_name}, a local-first autonomous AI agent running on the user's machine.
 
 ## Capabilities
 You can use tools to browse the web, run terminal commands, read/write files, and search for information.
@@ -37,16 +36,24 @@ Always choose the most appropriate tool. Prefer reading before writing, writing 
 
 ## Guidelines
 - Think before acting. For complex tasks, state your plan before executing it.
-- Report tool errors honestly — never fabricate results.
+- Report tool errors honestly - never fabricate results.
 - Keep responses concise and use markdown where it aids readability.
 - Ask for clarification rather than guessing when the goal is ambiguous.
+- IMPORTANT: If tools are present in your tool list, USE THEM DIRECTLY. Never claim you lack network or tool access when the tools are available - just call them.
 
 ## Trust Level: {trust_level}
 {trust_description}
 
+## Session Capabilities (Active Right Now)
+{capabilities_block}
+
 ## Current UTC Time
 {utc_time}
 {plan_block}"""
+
+_CAPABILITIES_GRANTED_TEMPLATE = "Active capabilities: {granted_list}\nThese are UNLOCKED - use the corresponding tools freely without asking permission."
+
+_CAPABILITIES_NONE = "No session capabilities granted yet. If a tool fails due to a missing capability, tell the user to run /grant <capability> (e.g. /grant net:fetch). Do NOT claim you lack tool access - just invoke the tool and let the safety kernel handle gating."
 
 _PLAN_TEMPLATE = """
 ## Active Plan
@@ -137,10 +144,19 @@ class ContextBuilder:
                 steps="\n".join(step_lines),
             )
 
+        # Build capabilities block so the LLM knows exactly what is unlocked
+        granted = getattr(session, "granted_capabilities", frozenset())
+        if granted:
+            granted_list = "  " + "\n  ".join(sorted(granted))
+            capabilities_block = _CAPABILITIES_GRANTED_TEMPLATE.format(granted_list=granted_list)
+        else:
+            capabilities_block = _CAPABILITIES_NONE
+
         prompt = _SYSTEM_TEMPLATE.format(
             agent_name=self.agent_name,
             trust_level=trust_level.upper(),
             trust_description=trust_desc,
+            capabilities_block=capabilities_block,
             utc_time=utc_time,
             plan_block=plan_block,
         ).strip()

@@ -153,6 +153,7 @@ class CLIInterface:
         self._session: Optional[Session] = None
         self._orchestrator: Optional[Orchestrator] = None
         self._memory: Optional[MemoryManager] = None
+        self._scheduler = None
         self._running_task: Optional[asyncio.Task] = None
         self._shutdown = asyncio.Event()
         # Track active model key for the model selector
@@ -241,6 +242,20 @@ class CLIInterface:
         )
 
         log.info("cli.initialized", session_id=self._session.id)
+
+        # ── Scheduler ─────────────────────────────────────────────────────────
+        try:
+            from schedular.schedular import TaskScheduler
+            self._scheduler = TaskScheduler(
+                orchestrator=self._orchestrator,
+                memory_manager=self._memory,
+                max_concurrent_tasks=self.settings.scheduler.max_concurrent_tasks,
+                timezone=self.settings.scheduler.timezone,
+            )
+            await self._scheduler.start()
+            log.info("cli.scheduler_started")
+        except Exception as e:
+            log.warning("cli.scheduler_init_failed", error=str(e))
         self.console.print("[dim]✓ Ready[/]\n")
         self._active_model_key = current_model_key(self.settings)
 
@@ -943,7 +958,12 @@ class CLIInterface:
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     async def _cleanup(self) -> None:
-        """Flush memory and close connections."""
+        """Flush memory, stop scheduler, and close connections."""
+        if self._scheduler:
+            try:
+                await self._scheduler.stop()
+            except Exception as _sched_err:
+                log.debug("cli.scheduler_stop_failed", error=str(_sched_err))
         if self._memory:
             try:
                 await self._memory.close()

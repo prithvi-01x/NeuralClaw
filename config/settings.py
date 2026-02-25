@@ -244,6 +244,51 @@ class TelegramConfig(BaseModel):
     authorized_user_ids: list[int] = Field(default_factory=list)
 
 
+class VoiceConfig(BaseModel):
+    enabled: bool = True
+    whisper_model: str = "base.en"
+    whisper_device: str = "cpu"
+    piper_model_path: str = ""
+    sample_rate: int = 16000
+    channels: int = 1
+    vad_aggressiveness: int = 2
+    silence_duration_ms: int = 800
+    max_utterance_s: int = 30
+    min_utterance_ms: int = 300
+    # Phase G — hotword / wake word
+    wake_word_enabled: bool = False
+    wake_word_model: str = "hey_mycroft"
+    wake_sensitivity: float = 0.5
+    mic_device_index: Optional[int] = None
+
+    @field_validator("whisper_device")
+    @classmethod
+    def _valid_device(cls, v: str) -> str:
+        if v not in ("cpu", "cuda"):
+            raise ValueError(
+                f"voice.whisper_device must be 'cpu' or 'cuda', got '{v}'"
+            )
+        return v
+
+    @field_validator("vad_aggressiveness")
+    @classmethod
+    def _valid_vad(cls, v: int) -> int:
+        if not (0 <= v <= 3):
+            raise ValueError(
+                f"voice.vad_aggressiveness must be 0-3, got {v}"
+            )
+        return v
+
+    @field_validator("sample_rate")
+    @classmethod
+    def _valid_sample_rate(cls, v: int) -> int:
+        if v not in (8000, 16000, 32000, 48000):
+            raise ValueError(
+                f"voice.sample_rate must be 8000, 16000, 32000, or 48000, got {v}"
+            )
+        return v
+
+
 class SchedulerConfig(BaseModel):
     timezone: str = "UTC"
     max_concurrent_tasks: int = 3
@@ -328,6 +373,7 @@ class Settings(BaseSettings):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     @field_validator("telegram_user_id", mode="before")
@@ -377,6 +423,11 @@ class Settings(BaseSettings):
     def _coerce_scheduler(cls, v: Any) -> Any:
         return SchedulerConfig(**v) if isinstance(v, dict) else v
 
+    @field_validator("voice", mode="before")
+    @classmethod
+    def _coerce_voice(cls, v: Any) -> Any:
+        return VoiceConfig(**v) if isinstance(v, dict) else v
+
     @field_validator("logging", mode="before")
     @classmethod
     def _coerce_logging(cls, v: Any) -> Any:
@@ -415,6 +466,11 @@ class Settings(BaseSettings):
     @property
     def ollama_base_url_v1(self) -> str:
         return self.ollama_base_url + "/v1"
+
+    @property
+    def voice_raw(self) -> dict:
+        """Return voice config as a plain dict for VoiceInterface."""
+        return self.voice.model_dump()
 
     @property
     def authorized_telegram_ids(self) -> list[int]:
@@ -574,7 +630,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
 
     _KNOWN_SECTIONS = {
         "agent", "llm", "memory", "tools", "safety",
-        "mcp", "telegram", "scheduler", "logging",
+        "mcp", "telegram", "scheduler", "voice", "logging",
     }
     init_kwargs = {k: v for k, v in yaml_data.items() if k in _KNOWN_SECTIONS}
 

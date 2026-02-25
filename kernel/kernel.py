@@ -77,6 +77,10 @@ class KernelConfig:
     # Skills
     skill_dirs: list
 
+    # Scheduler
+    scheduler_max_concurrent: int = 3
+    scheduler_timezone: str = "UTC"
+
     # Optional
     serpapi_key: Optional[str] = None
     ollama_base_url: Optional[str] = None
@@ -105,6 +109,8 @@ class KernelConfig:
             allowed_paths=settings.tools.filesystem.allowed_paths,
             whitelist_extra=settings.tools.terminal.whitelist_extra,
             skill_dirs=skill_dirs,
+            scheduler_max_concurrent=settings.scheduler.max_concurrent_tasks,
+            scheduler_timezone=settings.scheduler.timezone,
             serpapi_key=settings.serpapi_key,
             ollama_base_url=getattr(settings, "ollama_base_url", None),
         )
@@ -134,6 +140,7 @@ class AgentKernel:
         skill_bus,
         safety_kernel,
         orchestrator,
+        scheduler=None,
     ) -> None:
         self.config         = config
         self.llm_client     = llm_client
@@ -142,6 +149,7 @@ class AgentKernel:
         self.skill_bus      = skill_bus
         self.safety_kernel  = safety_kernel
         self.orchestrator   = orchestrator
+        self.scheduler      = scheduler
 
     # ─────────────────────────────────────────────────────────────────────────
     # Factory
@@ -218,6 +226,16 @@ class AgentKernel:
         )
         log.info("kernel.orchestrator_ready")
 
+        # ── Scheduler ────────────────────────────────────────────────────────
+        from schedular.schedular import TaskScheduler
+        scheduler = TaskScheduler(
+            orchestrator=orchestrator,
+            memory_manager=memory_manager,
+            max_concurrent_tasks=cfg.scheduler_max_concurrent,
+            timezone=cfg.scheduler_timezone,
+        )
+        log.info("kernel.scheduler_ready")
+
         log.info("kernel.build.complete")
         return cls(
             config=cfg,
@@ -227,6 +245,7 @@ class AgentKernel:
             skill_bus=skill_bus,
             safety_kernel=safety_kernel,
             orchestrator=orchestrator,
+            scheduler=scheduler,
         )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -236,6 +255,11 @@ class AgentKernel:
     async def shutdown(self) -> None:
         """Gracefully shut down all sub-systems that require cleanup."""
         log.info("kernel.shutdown.start")
+        if self.scheduler:
+            try:
+                await self.scheduler.stop()
+            except Exception as e:
+                log.warning("kernel.shutdown.scheduler_stop_failed", error=str(e))
         try:
             await self.memory_manager.close()
         except NeuralClawError as e:

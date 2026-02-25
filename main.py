@@ -35,9 +35,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--interface",
-        choices=["cli", "telegram"],
+        choices=["cli", "telegram", "voice", "voice-app"],
         default="cli",
-        help="Interface to start (default: cli)",
+        help="Interface to start (default: cli). voice-app = voice + Qt tray/overlay (Phase H)",
     )
     parser.add_argument(
         "--config",
@@ -203,23 +203,76 @@ async def main() -> int:
     elif args.interface == "telegram":
         log.info("neuralclaw.interface_starting", interface="telegram")
         await _run_telegram(settings, log)
+    elif args.interface == "voice":
+        log.info("neuralclaw.interface_starting", interface="voice")
+        await _run_voice(settings, log)
+    elif args.interface == "voice-app":
+        log.info("neuralclaw.interface_starting", interface="voice-app")
+        _run_voice_app(settings, log)
 
     return 0
+
+
+def _run_voice_app(settings, log) -> None:
+    """
+    Launch the Qt voice application (Phase H): tray icon + ambient overlay
+    + asyncio voice pipeline. This is a synchronous call — Qt's event loop
+    blocks until the user quits via the tray menu or Ctrl+C.
+    """
+    try:
+        from app import run_qt_app
+    except ImportError as e:
+        log.exception("voice_app.import_failed", error=str(e))
+        print(
+            "\n❌ PyQt6 not installed. Install with:\n"
+            "   pip install PyQt6\n",
+            file=sys.stderr,
+        )
+        raise
+
+    log.info("voice_app.starting")
+    try:
+        exit_code = run_qt_app(settings=settings)
+        log.info("voice_app.exited", exit_code=exit_code)
+    except KeyboardInterrupt:
+        log.info("voice_app.interrupted")
 
 
 async def _run_cli(settings, log) -> None:
     """
     Full CLI REPL — Phase 5 implementation.
-    Delegates to interfaces/cli.py.
+    Delegates to interfaces/cli.py. Scheduler runs concurrently.
     """
     from interfaces.cli import run_cli
     await run_cli(settings, log)
 
 
+async def _run_voice(settings, log) -> None:
+    """
+    Launch the voice interface (Phase F).
+    Delegates to interfaces/voice.py.
+    """
+    try:
+        from interfaces.voice import run_voice
+    except (ImportError, ModuleNotFoundError) as e:
+        log.exception("voice.import_failed", error=str(e))
+        print("\n❌ Failed to import Voice interface.\n", file=sys.stderr)
+        raise
+
+    log.info("voice.interface_bootstrap")
+    try:
+        await run_voice(settings=settings, log_=log)
+    except KeyboardInterrupt:
+        log.info("voice.interrupted")
+    except (OSError, RuntimeError) as e:
+        log.exception("voice.crashed", error=str(e))
+        raise
+
+
 async def _run_telegram(settings, log) -> None:
     """
     Launch the real Telegram bot interface.
-    Delegates to interfaces/telegram.py
+    Delegates to interfaces/telegram.py. Scheduler runs concurrently.
     """
 
     try:
