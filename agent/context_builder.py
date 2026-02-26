@@ -16,6 +16,7 @@ from exceptions import MemoryError as NeuralClawMemoryError, MemoryStoreError
 from brain.types import Message, Role, ToolSchema
 from memory.memory_manager import MemoryManager
 from observability.logger import get_logger
+from agent.workspace import get_workspace_loader
 
 log = get_logger(__name__)
 
@@ -163,6 +164,12 @@ class ContextBuilder:
 
         if extra_system:
             prompt += f"\n\n{extra_system}"
+
+        # Inject workspace files (SOUL.md, USER.md, MEMORY.md) if they exist.
+        # Cached by mtime — zero overhead if files haven't changed.
+        workspace_block = get_workspace_loader().build_context_block()
+        if workspace_block:
+            prompt += f"\n\n{workspace_block}"
 
         return prompt
 

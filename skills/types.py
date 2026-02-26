@@ -177,12 +177,16 @@ class SkillResult:
         )
 
     def to_llm_content(self) -> str:
-        """Return the string the LLM sees as the tool result."""
+        """Return the string the LLM sees as the tool result. Never returns empty."""
         import json
         if not self.success:
-            return f"ERROR ({self.error_type}): {self.error}"
+            error_type = self.error_type or "UnknownError"
+            error_msg  = self.error or "no error detail provided"
+            return f"ERROR ({error_type}): {error_msg}"
         if isinstance(self.output, str):
-            return self.output
+            return self.output or f"[{self.skill_name} returned an empty string]"
+        if self.output is None:
+            return f"[{self.skill_name} returned no output]"
         try:
             return json.dumps(self.output, indent=2, default=str)
         except (TypeError, ValueError):

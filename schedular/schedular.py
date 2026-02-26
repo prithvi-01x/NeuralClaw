@@ -225,10 +225,19 @@ class TaskScheduler:
 
     @classmethod
     def from_settings(cls, settings, orchestrator, memory_manager) -> "TaskScheduler":
+        tasks = list(_DEFAULT_TASKS)
+
+        # Add heartbeat task — reads interval from scheduler config (default 30 min)
+        heartbeat_interval = getattr(settings.scheduler, "heartbeat_interval_minutes", 30)
+        heartbeat_enabled  = getattr(settings.scheduler, "heartbeat_enabled", True)
+        if heartbeat_enabled:
+            from agent.heartbeat import build_heartbeat_task
+            tasks.append(build_heartbeat_task(interval_minutes=heartbeat_interval))
+
         return cls(
             orchestrator=orchestrator,
             memory_manager=memory_manager,
-            tasks=list(_DEFAULT_TASKS),
+            tasks=tasks,
             max_concurrent_tasks=settings.scheduler.max_concurrent_tasks,
             timezone=settings.scheduler.timezone,
         )
@@ -388,6 +397,30 @@ class TaskScheduler:
                 )
                 session = self._make_session(task)
                 message = task.to_invocation_message()
+
+                # ── Heartbeat: delegate to HeartbeatRunner instead of SkillBus ──
+                if task.skill_name == "heartbeat":
+                    try:
+                        from agent.heartbeat import HeartbeatRunner
+                        runner = HeartbeatRunner(self._orchestrator, self._memory)
+                        await asyncio.wait_for(runner.run(session), timeout=task.timeout_s)
+                        run.finish(succeeded=True)
+                        self.stats.successful_runs += 1
+                        log.info("scheduler.heartbeat_complete", run_id=run.run_id,
+                                 duration_s=round(run.duration_s, 1))
+                    except asyncio.TimeoutError:
+                        run.finish(succeeded=False, error="Heartbeat timed out")
+                        self.stats.failed_runs += 1
+                        self.stats.last_error = "Heartbeat timed out"
+                        log.warning("scheduler.heartbeat_timeout", run_id=run.run_id)
+                    except Exception as hb_err:
+                        run.finish(succeeded=False, error=str(hb_err))
+                        self.stats.failed_runs += 1
+                        self.stats.last_error = str(hb_err)
+                        log.error("scheduler.heartbeat_error", error=str(hb_err), exc_info=True)
+                    self.task_history.append(run)
+                    return
+                # ── Normal skill dispatch ─────────────────────────────────────
 
                 try:
                     turn_result = await asyncio.wait_for(

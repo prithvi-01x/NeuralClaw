@@ -266,6 +266,47 @@ class Orchestrator:
         self._cached_md_instructions: str | None = None
     # ─────────────────────────────────────────────────────────────────────────
 
+    def reset_tool_support(self) -> None:
+        """
+        Re-enable tool calling for the current model after a stale disable.
+
+        Clears both the capability registry entry and the client-instance flag
+        that get set when an LLMInvalidRequestError causes automatic fallback to
+        chat-only mode. Use via the CLI's /resetcaps command.
+
+        Safe to call at any time — if tools were never disabled, this is a no-op.
+        """
+        from brain.capabilities import reset_capabilities
+        provider = _provider_name_from_client(self._llm)
+        model_id = self._config.model
+
+        reset_capabilities(provider, model_id)
+
+        # Re-enable the client-instance flag
+        try:
+            self._llm.supports_tools = True
+        except AttributeError:
+            pass
+        # Also propagate to inner primary for ResilientLLMClient
+        from brain.llm_client import ResilientLLMClient
+        if isinstance(self._llm, ResilientLLMClient):
+            try:
+                self._llm._primary.supports_tools = True
+                self._llm.supports_tools = True
+            except AttributeError:
+                pass
+
+        # Invalidate tool schema cache so it is rebuilt on next turn
+        self._cached_tool_schemas = None
+
+        log.info(
+            "orchestrator.tool_support_reset",
+            provider=provider,
+            model=model_id,
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+
     def swap_llm_client(self, new_client: BaseLLMClient, new_model_id: str = "") -> None:
         """
         Replace the active LLM client and model ID without restarting.
@@ -715,10 +756,16 @@ class Orchestrator:
         llm_tools: list[BrainToolSchema] = all_tool_schemas if _supports_tools else []
 
         if not _supports_tools:
-            log.debug(
-                "orchestrator.tools_suppressed",
+            log.warning(
+                "orchestrator.tools_disabled",
                 model=self._config.model,
-                reason="capability registry or client flag",
+                client_flag=_client_supports,
+                registry_flag=_registry_caps.supports_tools,
+                reason=(
+                    "client.supports_tools=False — set by prior LLMInvalidRequestError fallback"
+                    if not _client_supports
+                    else "capability registry has supports_tools=False for this model"
+                ),
             )
 
         # ── Build message context ─────────────────────────────────────────────
@@ -852,10 +899,19 @@ class Orchestrator:
 
             # Append tool results to messages
             for brain_tc, result in zip(llm_resp.tool_calls, tool_results):
+                raw_content = result.content
+                # Defend against None/empty content — an empty string passed to
+                # the provider produces a confusing "I have no output" LLM reply.
+                if not raw_content:
+                    raw_content = (
+                        f"[Tool '{brain_tc.name}' executed successfully but returned no output]"
+                        if not result.is_error
+                        else f"[Tool '{brain_tc.name}' failed with no error detail]"
+                    )
                 brain_tr = BrainToolResult(
                     tool_call_id=brain_tc.id,
                     name=brain_tc.name,
-                    content=result.content,
+                    content=raw_content,
                     is_error=result.is_error,
                 )
                 messages.append(Message.tool_response(brain_tr))

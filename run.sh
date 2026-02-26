@@ -4,13 +4,16 @@
 #
 # Usage:
 #   ./run.sh              → CLI interface (default)
+#   ./run.sh onboard      → Interactive setup wizard
+#   ./run.sh install news → Install the 'news' skill
+#   ./run.sh skills       → List available skills
 #   ./run.sh telegram     → Telegram bot
 #   ./run.sh --help       → Show main.py help
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python"
+VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
 
 if [[ ! -x "$VENV_PYTHON" ]]; then
     echo "❌  .venv not found. Run first:"
@@ -18,14 +21,24 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
     exit 1
 fi
 
-# Default to CLI interface if no args given
+# Subcommands passed directly through to main.py
+_SUBCOMMANDS="onboard install skills"
+
 if [[ $# -eq 0 ]]; then
     exec "$VENV_PYTHON" "$SCRIPT_DIR/main.py" --interface cli
 fi
 
+# Check if the first arg is a known subcommand
+FIRST="$1"
+for sub in $_SUBCOMMANDS; do
+    if [[ "$FIRST" == "$sub" ]]; then
+        exec "$VENV_PYTHON" "$SCRIPT_DIR/main.py" "$@"
+    fi
+done
+
 # If first arg is a bare interface name (no --), prepend --interface
-if [[ "$1" != --* && "$1" != -* ]]; then
-    INTERFACE="$1"
+if [[ "$FIRST" != --* && "$FIRST" != -* ]]; then
+    INTERFACE="$FIRST"
     shift
     exec "$VENV_PYTHON" "$SCRIPT_DIR/main.py" --interface "$INTERFACE" "$@"
 fi

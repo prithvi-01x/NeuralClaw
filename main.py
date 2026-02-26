@@ -33,6 +33,24 @@ def parse_args() -> argparse.Namespace:
         prog="neuralclaw",
         description="NeuralClaw — Local-first autonomous AI agent platform",
     )
+    # Positional subcommand: onboard / install / skills
+    parser.add_argument(
+        "subcommand",
+        nargs="?",
+        default=None,
+        help=(
+            "'onboard' — interactive setup wizard. "
+            "'install <skill>' — install a skill by name, URL, or file. "
+            "'skills' — list installable skills. "
+            "Omit to start the normal interface."
+        ),
+    )
+    parser.add_argument(
+        "subcommand_arg",
+        nargs="?",
+        default=None,
+        help="Argument for subcommand (e.g. skill name for 'install').",
+    )
     parser.add_argument(
         "--interface",
         choices=["cli", "telegram", "voice", "voice-app"],
@@ -55,6 +73,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Enable MCP server connections on startup",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force overwrite when installing a skill that already exists",
+    )
+    parser.add_argument(
+        "--skip-health-check",
+        action="store_true",
+        default=False,
+        help="Skip LLM health check during onboard",
     )
     return parser.parse_args()
 
@@ -124,6 +154,26 @@ def bootstrap(args: argparse.Namespace):
 
 async def main() -> int:
     args = parse_args()
+
+    # ── Subcommands: no full bootstrap needed ─────────────────────────────────
+    if args.subcommand == "onboard":
+        from onboard.wizard import run_onboard
+        return await run_onboard(skip_health_check=getattr(args, "skip_health_check", False))
+
+    if args.subcommand == "install":
+        skill_arg = args.subcommand_arg
+        if not skill_arg:
+            print("Usage: python main.py install <skill-name-or-url>", file=sys.stderr)
+            print("       python main.py skills   (to list available skills)", file=sys.stderr)
+            return 1
+        from onboard.skill_installer import run_install
+        return run_install(skill_arg, force=getattr(args, "force", False))
+
+    if args.subcommand == "skills":
+        from onboard.skill_installer import run_list_available
+        return run_list_available(filter_str=args.subcommand_arg or "")
+
+    # ── Normal agent startup ───────────────────────────────────────────────────
     settings, log = bootstrap(args)
 
     log.info(

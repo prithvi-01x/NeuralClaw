@@ -292,6 +292,15 @@ class VoiceConfig(BaseModel):
 class SchedulerConfig(BaseModel):
     timezone: str = "UTC"
     max_concurrent_tasks: int = 3
+    heartbeat_enabled: bool = True
+    heartbeat_interval_minutes: int = 30
+
+    @field_validator("heartbeat_interval_minutes")
+    @classmethod
+    def _valid_heartbeat_interval(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("scheduler.heartbeat_interval_minutes must be >= 1")
+        return v
 
     @field_validator("max_concurrent_tasks")
     @classmethod

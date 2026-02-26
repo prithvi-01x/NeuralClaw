@@ -215,14 +215,13 @@ class AgentKernel:
             max_tokens=cfg.llm_max_tokens,
         )
         orchestrator = Orchestrator(
-            llm=llm_client,
+            llm_client=llm_client,
             llm_config=llm_config,
-            bus=skill_bus,
-            registry=skill_registry,
-            memory=memory_manager,
+            tool_bus=skill_bus,
+            tool_registry=skill_registry,
+            memory_manager=memory_manager,
             max_iterations=cfg.max_iterations_per_turn,
-            turn_timeout=cfg.max_turn_timeout_seconds,
-            confirmation_timeout=cfg.confirmation_timeout_seconds,
+            max_turn_timeout=cfg.max_turn_timeout_seconds,
         )
         log.info("kernel.orchestrator_ready")
 

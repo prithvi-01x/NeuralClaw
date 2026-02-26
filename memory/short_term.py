@@ -88,9 +88,16 @@ class ConversationBuffer:
                 break
             self._messages.pop(0)
 
-        # Drop any leading orphaned assistant/tool messages so the buffer
-        # always starts with a USER message (keeps turn pairs intact).
-        while self._messages and self._messages[0].role != Role.USER:
+        # Drop only leading orphaned plain-assistant messages (no tool_calls).
+        # We must NOT drop Role.TOOL messages or Role.ASSISTANT messages that
+        # carry tool_calls — those are paired with their tool result and removing
+        # one half leaves the buffer in an invalid state that causes provider
+        # API errors (OpenAI: "tool role must follow assistant with tool_calls").
+        while (
+            self._messages
+            and self._messages[0].role == Role.ASSISTANT
+            and not getattr(self._messages[0], "tool_calls", None)
+        ):
             self._messages.pop(0)
 
     def add_user(self, content: str) -> None:

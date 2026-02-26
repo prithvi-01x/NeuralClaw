@@ -286,6 +286,33 @@ def invalidate_cache(provider: Optional[str] = None, model_id: Optional[str] = N
         _RESOLUTION_CACHE.clear()
 
 
+def reset_capabilities(provider: str, model_id: str) -> "ModelCapabilities":
+    """
+    Remove a (provider, model_id) entry from both the runtime registry and
+    resolution cache, then re-resolve from static rules.
+
+    Use this to recover from a stale supports_tools=False flag that was set
+    by a prior LLMInvalidRequestError fallback — without restarting the process.
+
+    Returns the freshly resolved ModelCapabilities after the reset.
+    """
+    key = (provider.lower().strip(), model_id.lower().strip())
+    _RUNTIME_REGISTRY.pop(key, None)
+    _RESOLUTION_CACHE.pop(key, None)
+
+    caps = get_capabilities(provider, model_id)
+
+    from observability.logger import get_logger
+    get_logger("brain.capabilities").info(
+        "capabilities.reset",
+        provider=provider,
+        model_id=model_id,
+        supports_tools=caps.supports_tools,
+        supports_vision=caps.supports_vision,
+    )
+    return caps
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal resolution logic
 # ─────────────────────────────────────────────────────────────────────────────

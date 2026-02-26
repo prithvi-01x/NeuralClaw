@@ -97,6 +97,7 @@ _HELP_TEXT = """
 | `/grant <capability>` | Grant a capability for this session (e.g. `fs:delete`) |
 | `/revoke <capability>` | Revoke a previously granted capability |
 | `/capabilities` | Show active capabilities for this session |
+| `/resetcaps` | Re-enable tool calling if disabled by an automatic fallback |
 | `/model` | Interactively switch the active LLM model |
 | `/compact` | Summarise old turns and compress context window |
 | `/usage` | Show token usage and estimated cost for this session |
@@ -272,14 +273,46 @@ class CLIInterface:
         trust = self._session.trust_level.value.upper()
         trust_colour = _TRUST_COLOURS.get(self._session.trust_level, "white")
 
+        # Show persona name from SOUL.md if workspace is configured
+        try:
+            from agent.workspace import get_workspace_loader
+            ws = get_workspace_loader()
+            persona_name = ws.agent_name()
+            personality  = ws.soul_personality()
+        except Exception:
+            persona_name = None
+            personality  = None
+
+        display_name = persona_name or self.settings.agent_name
+        persona_line = ""
+        if persona_name and persona_name != self.settings.agent_name:
+            persona_line = f"[bold magenta]{persona_name}[/]"
+            if personality:
+                persona_line += f"  ·  [dim italic]{personality}[/]"
+            persona_line += "\n"
+
+        # Suggest onboard if workspace isn't configured
+        onboard_hint = ""
+        try:
+            from agent.workspace import get_workspace_loader
+            if not get_workspace_loader().is_configured():
+                onboard_hint = (
+                    "\n[dim]💡 Run [bold]python main.py onboard[/bold] "
+                    "to personalise your assistant.[/]"
+                )
+        except Exception:
+            pass
+
         self.console.print(
             Panel(
+                f"{persona_line}"
                 f"[bold]v{ver}[/]  ·  "
                 f"LLM: [cyan]{provider}[/]/[cyan]{model}[/]  ·  "
                 f"Trust: [{trust_colour}]{trust}[/]  ·  "
                 f"Session: [dim]{self._session.id}[/]\n\n"
                 f"Type your message or [bold]/help[/] for commands. "
-                f"[bold]exit[/] or Ctrl+D to quit.",
+                f"[bold]exit[/] or Ctrl+D to quit."
+                f"{onboard_hint}",
                 border_style="cyan",
                 padding=(0, 2),
             )
@@ -344,6 +377,17 @@ class CLIInterface:
             model_label = model_label[7:]
         return f"{colour}NeuralClaw[{trust}][{model_label}][{turns}]{reset}> "
 
+    def _get_display_name(self) -> str:
+        """Return persona name from SOUL.md if configured, else settings agent name."""
+        try:
+            from agent.workspace import get_workspace_loader
+            name = get_workspace_loader().agent_name()
+            if name:
+                return name
+        except Exception:
+            pass
+        return self.settings.agent_name
+
     # ── Command Dispatch ──────────────────────────────────────────────────────
 
     async def _dispatch(self, raw: str) -> None:
@@ -367,6 +411,7 @@ class CLIInterface:
                 "/grant":   self._cmd_grant,
                 "/revoke":  self._cmd_revoke,
                 "/capabilities": lambda _: self._cmd_capabilities(),
+                "/resetcaps":   lambda _: self._cmd_resetcaps(),
                 "/memory":  self._cmd_memory,
                 "/run":     self._cmd_run,
                 "/ask":     self._cmd_ask,
@@ -787,6 +832,37 @@ class CLIInterface:
             self.console.print(
                 "[dim]No capabilities granted. Use /grant <capability> to add one.[/]"
             )
+
+    def _cmd_resetcaps(self) -> None:
+        """
+        Re-enable tool calling for the current model.
+
+        When a model returns an unsupported-tools error, NeuralClaw automatically
+        falls back to chat-only mode and sets supports_tools=False on both the
+        client instance and the capability registry. This flag persists for the
+        lifetime of the process.
+
+        Use /resetcaps after switching models or fixing the provider config so the
+        next turn will attempt tool calls again instead of running in chat-only mode.
+        """
+        from agent.orchestrator import _provider_name_from_client
+        provider = _provider_name_from_client(
+            self._orchestrator._llm
+        ) if hasattr(self._orchestrator, "_llm") else "unknown"
+        model = getattr(self._orchestrator._config, "model", "unknown")
+
+        if not hasattr(self._orchestrator, "reset_tool_support"):
+            self.console.print(
+                "[yellow]Orchestrator does not support reset_tool_support. "
+                "Please upgrade NeuralClaw.[/]"
+            )
+            return
+
+        self._orchestrator.reset_tool_support()
+        self.console.print(
+            f"[green]✓ Tool support reset for [bold]{provider}/{model}[/bold].[/]\n"
+            "[dim]The next turn will attempt to use tools again.[/]"
+        )
 
     async def _cmd_memory(self, query: str) -> None:
         """Search long-term memory."""

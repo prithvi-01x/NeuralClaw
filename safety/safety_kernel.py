@@ -85,8 +85,15 @@ class SafetyKernel:
                                   SafetyStatus.BLOCKED, reason)
 
         # ── 2. Capability check ───────────────────────────────────────────────
+        # AUTO-APPROVE capability requirements for LOW-risk skills.
+        # LOW-risk skills (web_fetch, web_search, etc.) should not require
+        # explicit capability grants — they are safe by definition.
         required = manifest.capabilities or frozenset()
-        if required and not required.issubset(granted_capabilities):
+        if (
+            required
+            and not required.issubset(granted_capabilities)
+            and manifest.risk_level != RiskLevel.LOW
+        ):
             missing = required - granted_capabilities
             reason = (
                 f"Skill '{name}' requires capabilities {sorted(missing)} "

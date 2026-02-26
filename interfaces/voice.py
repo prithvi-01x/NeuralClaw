@@ -649,7 +649,8 @@ class VoiceInterface:
             return False
         samples = struct.unpack(f"{n}h", frame[:n * 2])
         rms = (sum(s * s for s in samples) / n) ** 0.5
-        return rms > 300  # empirically tuned threshold for quiet room
+        print("RMS:", rms)
+        return rms > 0  # empirically tuned threshold for quiet room
 
     # ── Transcription ─────────────────────────────────────────────────────────
 
@@ -675,7 +676,7 @@ class VoiceInterface:
             audio_f32,
             language="en",
             beam_size=1,          # fastest; increase for accuracy
-            vad_filter=True,      # Whisper's own internal VAD as second pass
+            vad_filter=False,      # Whisper's own internal VAD as second pass
         )
         return " ".join(seg.text.strip() for seg in segments).strip()
 
