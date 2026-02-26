@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from observability.logger import get_logger
-from schedular.schedular import ScheduledTask
+from scheduler.scheduler import ScheduledTask
 from skills.types import TrustLevel
 
 log = get_logger(__name__)

@@ -246,7 +246,7 @@ class CLIInterface:
 
         # ── Scheduler ─────────────────────────────────────────────────────────
         try:
-            from schedular.schedular import TaskScheduler
+            from scheduler.scheduler import TaskScheduler
             self._scheduler = TaskScheduler(
                 orchestrator=self._orchestrator,
                 memory_manager=self._memory,

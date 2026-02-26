@@ -75,9 +75,7 @@ class Reflector:
                 steps_taken=steps_taken,
                 outcome=outcome,
             )
-        except NeuralClawError as e:
-            log.warning("reflector.lesson_extract_failed", error=str(e), error_type=type(e).__name__)
-        except BaseException as e:
+        except Exception as e:
             log.warning("reflector.lesson_extract_failed", error=str(e), error_type=type(e).__name__)
 
         if lesson:
@@ -87,9 +85,7 @@ class Reflector:
                     lesson,
                     context=goal,
                 )
-            except NeuralClawError as e:
-                log.warning("reflector.lesson_store_failed", error=str(e), error_type=type(e).__name__)
-            except BaseException as e:
+            except Exception as e:
                 log.warning("reflector.lesson_store_failed", error=str(e), error_type=type(e).__name__)
 
         # ── Commit the episode record ─────────────────────────────────────────
@@ -106,9 +102,7 @@ class Reflector:
                     tool_count=session.tool_call_count,
                     turn_count=session.turn_count,
                 )
-            except NeuralClawError as e:
-                log.warning("reflector.episode_commit_failed", error=str(e), error_type=type(e).__name__)
-            except BaseException as e:
+            except Exception as e:
                 log.warning("reflector.episode_commit_failed", error=str(e), error_type=type(e).__name__)
 
         log.info(

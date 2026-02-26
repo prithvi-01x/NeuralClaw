@@ -55,3 +55,23 @@ def fire_and_forget(coro, label: str = "bg_task") -> asyncio.Task:
 
     task.add_done_callback(_on_done)
     return task
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared error-result helper (DUP-2 fix — used by orchestrator + executor)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def make_skill_error(tool_call_id: str, name: str, error: str) -> "SkillResult":
+    """Return a SkillResult representing a failed/blocked call.
+
+    Shared by orchestrator._execute_tool_calls and executor.dispatch
+    to avoid maintaining two near-identical helpers.
+    """
+    from skills.types import SkillResult
+    return SkillResult.fail(
+        skill_name=name,
+        skill_call_id=tool_call_id,
+        error=error,
+        error_type="ExecutorError",
+        blocked=True,
+    )

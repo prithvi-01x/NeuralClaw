@@ -174,7 +174,7 @@ class AgentKernel:
 
         # ── Memory manager ───────────────────────────────────────────────────
         from memory.memory_manager import MemoryManager
-        memory_manager = MemoryManager(settings)
+        memory_manager = MemoryManager.from_settings(settings)
         await memory_manager.init()
         log.info("kernel.memory_ready")
 
@@ -226,7 +226,7 @@ class AgentKernel:
         log.info("kernel.orchestrator_ready")
 
         # ── Scheduler ────────────────────────────────────────────────────────
-        from schedular.schedular import TaskScheduler
+        from scheduler.scheduler import TaskScheduler
         scheduler = TaskScheduler(
             orchestrator=orchestrator,
             memory_manager=memory_manager,

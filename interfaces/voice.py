@@ -83,7 +83,7 @@ from pathlib import Path as _SkillPath
 from skills.loader import SkillLoader as _SkillLoader
 from skills.md_loader import MarkdownSkillLoader as _MdSkillLoader
 from skills.bus import SkillBus as _SkillBus
-from schedular.schedular import TaskScheduler
+from scheduler.scheduler import TaskScheduler
 from app.hotword import HotwordDetector, HotwordConfig, WakeEvent, make_detector
 
 log = get_logger(__name__)

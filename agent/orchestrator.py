@@ -74,6 +74,7 @@ _REASON_THRESHOLD = RiskLevel.HIGH
 # ─────────────────────────────────────────────────────────────────────────────
 
 from agent.utils import fire_and_forget as _fire_and_forget
+from agent.utils import make_skill_error as _make_skill_error
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -120,15 +121,8 @@ class TurnResult:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_legacy_error(tool_call_id: str, name: str, error: str) -> "SkillResult":
-    """Return a SkillResult representing a failed/blocked call."""
-    from skills.types import SkillResult
-    return SkillResult.fail(
-        skill_name=name,
-        skill_call_id=tool_call_id,
-        error=error,
-        error_type="ExecutorError",
-        blocked=True,
-    )
+    """Backward-compat alias — delegates to the shared helper in agent.utils."""
+    return _make_skill_error(tool_call_id, name, error)
 
 
 _TOOL_ERROR_PHRASES = (
@@ -185,22 +179,28 @@ def _provider_name_from_client(client) -> str:
     return "unknown"
 
 
+def _unwrap_resilient(client):
+    """Return the inner primary client if wrapped in ResilientLLMClient, else the client itself."""
+    from brain.llm_client import ResilientLLMClient
+    if isinstance(client, ResilientLLMClient):
+        return client._primary, client
+    return client, None
+
+
 def _register_no_tools(client, model_id: str) -> None:
     """Register model as no-tools in capability registry and update client flag."""
     from brain.capabilities import register_capabilities
     provider = _provider_name_from_client(client)
     register_capabilities(provider, model_id, supports_tools=False)
-    # Directly update client instance attribute if possible
     try:
         client.supports_tools = False
     except AttributeError:
         pass
-    # Also update inner primary client for ResilientLLMClient
-    from brain.llm_client import ResilientLLMClient
-    if isinstance(client, ResilientLLMClient):
+    inner, wrapper = _unwrap_resilient(client)
+    if wrapper:
         try:
-            client._primary.supports_tools = False
-            client.supports_tools = False
+            inner.supports_tools = False
+            wrapper.supports_tools = False
         except AttributeError:
             pass
 
@@ -264,6 +264,9 @@ class Orchestrator:
         # Cache for markdown skill instructions block — rebuilt only when None
         # (first call or after swap_llm_client invalidates it).
         self._cached_md_instructions: str | None = None
+
+        # Set by from_settings(); None when constructed directly (tests, etc.)
+        self._settings = None
     # ─────────────────────────────────────────────────────────────────────────
 
     def reset_tool_support(self) -> None:
@@ -287,12 +290,11 @@ class Orchestrator:
             self._llm.supports_tools = True
         except AttributeError:
             pass
-        # Also propagate to inner primary for ResilientLLMClient
-        from brain.llm_client import ResilientLLMClient
-        if isinstance(self._llm, ResilientLLMClient):
+        inner, wrapper = _unwrap_resilient(self._llm)
+        if wrapper:
             try:
-                self._llm._primary.supports_tools = True
-                self._llm.supports_tools = True
+                inner.supports_tools = True
+                wrapper.supports_tools = True
             except AttributeError:
                 pass
 
@@ -361,14 +363,12 @@ class Orchestrator:
                 pass
 
         # Also propagate to inner primary for ResilientLLMClient
-        from brain.llm_client import ResilientLLMClient
-        if isinstance(new_client, ResilientLLMClient):
-            inner = new_client._primary
+        inner, wrapper = _unwrap_resilient(new_client)
+        if wrapper:
             if new_model_id and hasattr(inner, "_refresh_capabilities"):
                 try:
                     inner._refresh_capabilities(new_model_id)
-                    # Mirror the inner's supports_tools flag upward
-                    new_client.supports_tools = getattr(inner, "supports_tools", True)
+                    wrapper.supports_tools = getattr(inner, "supports_tools", True)
                 except (AttributeError, RuntimeError, OSError):
                     pass
 
@@ -511,7 +511,11 @@ class Orchestrator:
             _recovery_depth = 0       # resets to 0 whenever a step succeeds
 
             # Configured overall timeout for autonomous execution, hardcapped if missing
-            timeout = getattr(self._settings.agent, "max_autonomous_timeout_seconds", 3600)
+            timeout = (
+                self._settings.agent.max_autonomous_timeout_seconds
+                if self._settings is not None
+                else 3600
+            )
 
             async def _execute_loop() -> AsyncGenerator[AgentResponse, None]:
                 nonlocal _recovery_depth
@@ -641,11 +645,10 @@ class Orchestrator:
                             break
 
             # Run the loop with an overall wall-clock timeout
-            import asyncio
+            # We can't use wait_for directly on an async generator, so we iterate it
+            # with a timeout on the *entire* process. We use an async def to allow
+            # wait_for to manage the timeout over the loop execution time.
             try:
-                # We can't use wait_for directly on an async generator, so we iterate it
-                # with a timeout on the *entire* process. We use an async def to allow
-                # wait_for to manage the timeout over the loop execution time.
                 async def _consume():
                     async for item in _execute_loop():
                         yield item

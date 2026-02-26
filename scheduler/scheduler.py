@@ -1,5 +1,5 @@
 """
-schedular/schedular.py — TaskScheduler (Phase D)
+scheduler/scheduler.py — TaskScheduler (Phase D)
 
 Autonomous task scheduler for NeuralClaw. Runs cron-style recurring tasks
 as asyncio coroutines inside the main event loop. Calls

@@ -8,6 +8,7 @@ Used in autonomous mode. Also handles recovery planning when a step fails.
 from __future__ import annotations
 
 import json
+import re
 from typing import Optional
 
 from brain.llm_client import BaseLLMClient
@@ -90,10 +91,7 @@ class Planner:
         try:
             response = await self._llm.generate(messages=messages, config=self._config)
             return self._parse_plan(response.content or "")
-        except (NeuralClawError, ValueError, RuntimeError) as e:
-            log.warning("planner.create_plan_failed", error=str(e), error_type=type(e).__name__)
-            return PlanResult(steps=[f"Complete the following task: {goal}"])
-        except BaseException as e:
+        except Exception as e:
             log.warning("planner.create_plan_failed", error=str(e), error_type=type(e).__name__)
             return PlanResult(steps=[f"Complete the following task: {goal}"])
 
@@ -117,10 +115,7 @@ class Planner:
         try:
             response = await self._llm.generate(messages=messages, config=self._config)
             return self._parse_recovery(response.content or "")
-        except (NeuralClawError, ValueError, RuntimeError) as e:
-            log.warning("planner.recovery_failed", error=str(e), error_type=type(e).__name__)
-            return RecoveryResult(recovery_steps=[], can_recover=False)
-        except BaseException as e:
+        except Exception as e:
             log.warning("planner.recovery_failed", error=str(e), error_type=type(e).__name__)
             return RecoveryResult(recovery_steps=[], can_recover=False)
 
@@ -144,8 +139,7 @@ class Planner:
             # Use regex to strip leading step numbers like "1.", "2)", "- ", etc.
             # (lstrip("0123456789.-) ") treated its arg as a character SET, not a
             # prefix pattern, and could eat leading digits from the step text itself.)
-            import re as _re
-            _STEP_PREFIX = _re.compile(r"^\d+[\.\)\-]\s*|^[-*•]\s+")
+            _STEP_PREFIX = re.compile(r"^\d+[\.\)\-]\s*|^[-*•]\s+")
             lines = [
                 _STEP_PREFIX.sub("", l.strip())
                 for l in content.splitlines()

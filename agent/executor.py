@@ -37,6 +37,7 @@ _REASON_THRESHOLD = RiskLevel.HIGH
 
 
 from agent.utils import fire_and_forget as _fire_and_forget
+from agent.utils import make_skill_error as _make_error_result
 
 
 class Executor:
@@ -54,12 +55,18 @@ class Executor:
         reasoner,               # agent.reasoner.Reasoner — loose typing avoids circular import
         memory_manager,         # memory.memory_manager.MemoryManager
         confirmation_timeout: int = 120,
+        response_synthesizer=None,  # agent.response_synthesizer.ResponseSynthesizer
     ) -> None:
         self._registry = registry
         self._bus = bus
         self._reasoner = reasoner
         self._memory = memory_manager
         self._confirmation_timeout = confirmation_timeout
+        # IMP-7: reuse a single instance instead of creating one per callback
+        if response_synthesizer is None:
+            from agent.response_synthesizer import ResponseSynthesizer
+            response_synthesizer = ResponseSynthesizer()
+        self._synth = response_synthesizer
 
     async def dispatch(
         self,
@@ -107,11 +114,9 @@ class Executor:
 
         # ── 2. Confirmation callback ──────────────────────────────────────────
         async def _on_confirm(confirm_req) -> bool:
-            from agent.response_synthesizer import ResponseSynthesizer
             future = session.register_confirmation(confirm_req.skill_call_id)
             if on_response:
-                synth = ResponseSynthesizer()
-                on_response(synth.confirmation_request(confirm_req))
+                on_response(self._synth.confirmation_request(confirm_req))
             try:
                 return await asyncio.wait_for(future, timeout=self._confirmation_timeout)
             except asyncio.TimeoutError:
@@ -172,18 +177,3 @@ class Executor:
         ), label="record_tool_call")
 
         return result
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _make_error_result(tool_call_id: str, name: str, error: str) -> SkillResult:
-    """Return a SkillResult representing a blocked/failed call."""
-    return SkillResult.fail(
-        skill_name=name,
-        skill_call_id=tool_call_id,
-        error=error,
-        error_type="ExecutorError",
-        blocked=True,
-    )

@@ -497,17 +497,11 @@ class Settings(BaseSettings):
                 missing.append("TELEGRAM_BOT_TOKEN")
             if not self.authorized_telegram_ids:
                 missing.append("TELEGRAM_USER_ID")
-        key_map = {
-            "openai":     ("OPENAI_API_KEY",     self.openai_api_key),
-            "anthropic":  ("ANTHROPIC_API_KEY",  self.anthropic_api_key),
-            "bytez":      ("BYTEZ_API_KEY",       self.bytez_api_key),
-            "gemini":     ("GEMINI_API_KEY",      self.gemini_api_key),
-            "openrouter": ("OPENROUTER_API_KEY",  self.openrouter_api_key),
-        }
+
         provider = self.default_llm_provider
-        if provider in key_map:
-            env_name, value = key_map[provider]
-            if not value:
+        if provider in _key_map:
+            env_name, attr_name = _key_map[provider]
+            if not getattr(self, attr_name, None):
                 missing.append(env_name)
         return missing
 
@@ -526,16 +520,9 @@ class Settings(BaseSettings):
 
         # ── LLM provider API key ─────────────────────────────────────────────
         provider = self.llm.default_provider
-        key_map = {
-            "openai":     ("OPENAI_API_KEY",     self.openai_api_key),
-            "anthropic":  ("ANTHROPIC_API_KEY",  self.anthropic_api_key),
-            "bytez":      ("BYTEZ_API_KEY",       self.bytez_api_key),
-            "gemini":     ("GEMINI_API_KEY",      self.gemini_api_key),
-            "openrouter": ("OPENROUTER_API_KEY",  self.openrouter_api_key),
-        }
-        if provider in key_map:
-            env_name, value = key_map[provider]
-            if not value:
+        if provider in _key_map:
+            env_name, attr_name = _key_map[provider]
+            if not getattr(self, attr_name, None):
                 errors.append(
                     f"LLM provider '{provider}' requires {env_name} to be set "
                     f"in your .env file."
@@ -543,9 +530,9 @@ class Settings(BaseSettings):
 
         # ── Fallback providers also need their keys ──────────────────────────
         for fp in self.llm.fallback_providers:
-            if fp in key_map:
-                env_name, value = key_map[fp]
-                if not value:
+            if fp in _key_map:
+                env_name, attr_name = _key_map[fp]
+                if not getattr(self, attr_name, None):
                     errors.append(
                         f"Fallback provider '{fp}' requires {env_name} but it "
                         f"is not set. Remove '{fp}' from llm.fallback_providers "
