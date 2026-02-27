@@ -36,7 +36,7 @@ _ROOT = Path(__file__).parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app.hotword import (
+from neuralclaw.app.hotword import (
     WakeEvent,
     HotwordConfig,
     HotwordDetector,
@@ -547,7 +547,7 @@ class TestGateConditions:
 class TestSettingsHotwordIntegration:
     def test_voice_config_has_hotword_fields(self):
         """New fields exist on VoiceConfig with correct defaults."""
-        from config.settings import VoiceConfig
+        from neuralclaw.config.settings import VoiceConfig
         cfg = VoiceConfig()
         assert hasattr(cfg, "wake_word_enabled")
         assert hasattr(cfg, "wake_word_model")
@@ -555,28 +555,28 @@ class TestSettingsHotwordIntegration:
         assert hasattr(cfg, "mic_device_index")
 
     def test_wake_word_enabled_default_false(self):
-        from config.settings import VoiceConfig
+        from neuralclaw.config.settings import VoiceConfig
         cfg = VoiceConfig()
         assert cfg.wake_word_enabled is False
 
     def test_wake_word_model_default(self):
-        from config.settings import VoiceConfig
+        from neuralclaw.config.settings import VoiceConfig
         cfg = VoiceConfig()
         assert cfg.wake_word_model == "hey_mycroft"
 
     def test_wake_sensitivity_default(self):
-        from config.settings import VoiceConfig
+        from neuralclaw.config.settings import VoiceConfig
         cfg = VoiceConfig()
         assert cfg.wake_sensitivity == pytest.approx(0.5)
 
     def test_mic_device_index_default_none(self):
-        from config.settings import VoiceConfig
+        from neuralclaw.config.settings import VoiceConfig
         cfg = VoiceConfig()
         assert cfg.mic_device_index is None
 
     def test_hotword_fields_in_model_dump(self):
         """voice_raw dict must include hotword fields for HotwordConfig."""
-        from config.settings import VoiceConfig
+        from neuralclaw.config.settings import VoiceConfig
         cfg = VoiceConfig(
             wake_word_enabled=True,
             wake_word_model="hey_claw",
@@ -589,7 +589,7 @@ class TestSettingsHotwordIntegration:
 
     def test_hotword_config_from_settings_dump(self):
         """HotwordConfig can be built from VoiceConfig.model_dump()."""
-        from config.settings import VoiceConfig
+        from neuralclaw.config.settings import VoiceConfig
         vc = VoiceConfig(wake_word_enabled=True, wake_sensitivity=0.6)
         hc = HotwordConfig(vc.model_dump())
         assert hc.enabled is True
@@ -602,7 +602,7 @@ class TestSettingsHotwordIntegration:
 
 class TestVoiceInterfaceHotwordWiring:
     def _make_settings(self, wake_word_enabled: bool = False) -> MagicMock:
-        from config.settings import VoiceConfig
+        from neuralclaw.config.settings import VoiceConfig
         s = MagicMock()
         cfg = VoiceConfig(
             wake_word_enabled=wake_word_enabled,
@@ -626,21 +626,21 @@ class TestVoiceInterfaceHotwordWiring:
 
     def test_hotword_detector_none_by_default(self):
         """VoiceInterface._hotword_detector is None before start()."""
-        from interfaces.voice import VoiceInterface
+        from neuralclaw.interfaces.voice import VoiceInterface
         s = self._make_settings(wake_word_enabled=False)
         vi = VoiceInterface(s)
         assert vi._hotword_detector is None
 
     def test_on_wake_detected_callback_default_none(self):
         """VoiceInterface._on_wake_detected starts as None."""
-        from interfaces.voice import VoiceInterface
+        from neuralclaw.interfaces.voice import VoiceInterface
         s = self._make_settings()
         vi = VoiceInterface(s)
         assert vi._on_wake_detected is None
 
     def test_on_wake_detected_can_be_set(self):
         """_on_wake_detected callback can be assigned."""
-        from interfaces.voice import VoiceInterface
+        from neuralclaw.interfaces.voice import VoiceInterface
         s = self._make_settings()
         vi = VoiceInterface(s)
         cb = MagicMock()
@@ -649,7 +649,7 @@ class TestVoiceInterfaceHotwordWiring:
 
     def test_voice_cfg_has_wake_word_enabled(self):
         """VoiceInterface._cfg exposes wake_word_enabled from settings."""
-        from interfaces.voice import VoiceInterface
+        from neuralclaw.interfaces.voice import VoiceInterface
         s = self._make_settings(wake_word_enabled=True)
         vi = VoiceInterface(s)
         assert vi._cfg.wake_word_enabled is True
@@ -657,7 +657,7 @@ class TestVoiceInterfaceHotwordWiring:
     @pytest.mark.asyncio
     async def test_stop_with_no_detector_does_not_raise(self):
         """stop() when _hotword_detector is None should not raise."""
-        from interfaces.voice import VoiceInterface
+        from neuralclaw.interfaces.voice import VoiceInterface
         s = self._make_settings(wake_word_enabled=False)
         vi = VoiceInterface(s)
         vi._running = True
@@ -671,7 +671,7 @@ class TestVoiceInterfaceHotwordWiring:
     @pytest.mark.asyncio
     async def test_stop_calls_detector_stop(self):
         """stop() must call hotword_detector.stop() if detector is active."""
-        from interfaces.voice import VoiceInterface
+        from neuralclaw.interfaces.voice import VoiceInterface
         s = self._make_settings(wake_word_enabled=True)
         vi = VoiceInterface(s)
         vi._running = True

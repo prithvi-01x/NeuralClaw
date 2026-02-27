@@ -36,11 +36,11 @@ import structlog as _structlog_mod
 _structlog_mod.get_logger = lambda *a, **kw: MagicMock()  # type: ignore
 # ───────────────────────────────────────────────────────────────
 
-from agent.orchestrator import TurnResult, TurnStatus
-from agent.executor import Executor
-from agent.reflector import Reflector
-from skills.registry import SkillRegistry
-from skills.types import RiskLevel, SkillManifest, TrustLevel
+from neuralclaw.agent.orchestrator import TurnResult, TurnStatus
+from neuralclaw.agent.executor import Executor
+from neuralclaw.agent.reflector import Reflector
+from neuralclaw.skills.registry import SkillRegistry
+from neuralclaw.skills.types import RiskLevel, SkillManifest, TrustLevel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ def _make_llm_response(content="Hello!", has_tool_calls=False, tool_calls=None):
 
 
 def _make_tool_call(name="web_search", arguments=None, tc_id="tc-1"):
-    from brain.types import ToolCall as BrainToolCall
+    from neuralclaw.brain.types import ToolCall as BrainToolCall
     return BrainToolCall(
         id=tc_id,
         name=name,
@@ -124,8 +124,8 @@ def _make_orchestrator(llm_generate_fn, max_iterations=3, max_turn_timeout=30):
     Build a minimal Orchestrator with mocked dependencies.
     llm_generate_fn: async callable that replaces llm.generate().
     """
-    from agent.orchestrator import Orchestrator
-    from brain.types import LLMConfig
+    from neuralclaw.agent.orchestrator import Orchestrator
+    from neuralclaw.brain.types import LLMConfig
 
     llm = MagicMock()
     llm.generate = AsyncMock(side_effect=llm_generate_fn)
@@ -162,7 +162,7 @@ def _make_orchestrator(llm_generate_fn, max_iterations=3, max_turn_timeout=30):
     orc._executor = MagicMock()
 
     # Stub out capabilities so tools aren't suppressed
-    with patch("agent.orchestrator.get_capabilities",
+    with patch("neuralclaw.agent.orchestrator.get_capabilities",
                return_value=MagicMock(supports_tools=True)):
         pass  # patch applied per-test below
 
@@ -180,7 +180,7 @@ class TestTurnResult:
         assert expected == actual
 
     def test_turn_result_frozen(self):
-        from agent.response_synthesizer import AgentResponse, ResponseKind
+        from neuralclaw.agent.response_synthesizer import AgentResponse, ResponseKind
         r = TurnResult(
             status=TurnStatus.SUCCESS,
             response=AgentResponse(kind=ResponseKind.TEXT, text="hi"),
@@ -189,7 +189,7 @@ class TestTurnResult:
             r.status = TurnStatus.ERROR  # type: ignore
 
     def test_succeeded_property(self):
-        from agent.response_synthesizer import AgentResponse, ResponseKind
+        from neuralclaw.agent.response_synthesizer import AgentResponse, ResponseKind
         ok = TurnResult(
             status=TurnStatus.SUCCESS,
             response=AgentResponse(kind=ResponseKind.TEXT, text="ok"),
@@ -202,7 +202,7 @@ class TestTurnResult:
         assert err.succeeded is False
 
     def test_default_fields(self):
-        from agent.response_synthesizer import AgentResponse, ResponseKind
+        from neuralclaw.agent.response_synthesizer import AgentResponse, ResponseKind
         r = TurnResult(
             status=TurnStatus.ITER_LIMIT,
             response=AgentResponse(kind=ResponseKind.ERROR, text="x"),
@@ -218,7 +218,7 @@ class TestTurnResult:
 @pytest.mark.asyncio
 class TestAgentLoopTermination:
 
-    @patch("brain.capabilities.get_capabilities",
+    @patch("neuralclaw.brain.capabilities.get_capabilities",
            return_value=MagicMock(supports_tools=True))
     async def test_success_no_tool_calls(self, _caps):
         """LLM returns text immediately → SUCCESS."""
@@ -230,7 +230,7 @@ class TestAgentLoopTermination:
         assert result.status == TurnStatus.SUCCESS
         assert "Done!" in result.response.text
 
-    @patch("brain.capabilities.get_capabilities",
+    @patch("neuralclaw.brain.capabilities.get_capabilities",
            return_value=MagicMock(supports_tools=True))
     async def test_iter_limit(self, _caps):
         """LLM always returns tool calls → ITER_LIMIT after max_iterations."""
@@ -249,11 +249,11 @@ class TestAgentLoopTermination:
         result = await orc._agent_loop(session, "loop forever")
         assert result.status == TurnStatus.ITER_LIMIT
 
-    @patch("brain.capabilities.get_capabilities",
+    @patch("neuralclaw.brain.capabilities.get_capabilities",
            return_value=MagicMock(supports_tools=True))
     async def test_context_limit(self, _caps):
         """LLMContextError → CONTEXT_LIMIT status."""
-        from brain.llm_client import LLMContextError
+        from neuralclaw.brain.llm_client import LLMContextError
 
         async def _raise_context(**kw):
             raise LLMContextError("Input too long")
@@ -264,7 +264,7 @@ class TestAgentLoopTermination:
         assert result.status == TurnStatus.CONTEXT_LIMIT
         assert "context" in result.response.text.lower() or "limit" in result.response.text.lower()
 
-    @patch("brain.capabilities.get_capabilities",
+    @patch("neuralclaw.brain.capabilities.get_capabilities",
            return_value=MagicMock(supports_tools=True))
     async def test_error_on_unknown_exception(self, _caps):
         """Unhandled LLM exception → ERROR status."""
@@ -276,7 +276,7 @@ class TestAgentLoopTermination:
         result = await orc._agent_loop(session, "boom")
         assert result.status == TurnStatus.ERROR
 
-    @patch("brain.capabilities.get_capabilities",
+    @patch("neuralclaw.brain.capabilities.get_capabilities",
            return_value=MagicMock(supports_tools=True))
     async def test_blocked_on_critical_step(self, _caps):
         """Safety-blocked HIGH-risk tool call → BLOCKED status."""
@@ -297,14 +297,14 @@ class TestAgentLoopTermination:
         result = await orc._agent_loop(session, "do risky thing")
         assert result.status == TurnStatus.BLOCKED
 
-    @patch("brain.capabilities.get_capabilities",
+    @patch("neuralclaw.brain.capabilities.get_capabilities",
            return_value=MagicMock(supports_tools=True))
     async def test_tool_error_fallback_to_chat_only(self, _caps):
         """
         LLMInvalidRequestError with tool-related message → fallback to chat-only
         and succeed on retry.
         """
-        from brain.llm_client import LLMInvalidRequestError
+        from neuralclaw.brain.llm_client import LLMInvalidRequestError
 
         call_count = {"n": 0}
 
@@ -321,7 +321,7 @@ class TestAgentLoopTermination:
         assert result.status == TurnStatus.SUCCESS
         assert call_count["n"] == 2  # retried without tools
 
-    @patch("brain.capabilities.get_capabilities",
+    @patch("neuralclaw.brain.capabilities.get_capabilities",
            return_value=MagicMock(supports_tools=True))
     async def test_cancelled_session(self, _caps):
         """Cancelled session before first LLM call → ERROR with cancelled response."""
@@ -342,10 +342,10 @@ class TestAgentLoopTermination:
 @pytest.mark.asyncio
 class TestRunTurn:
 
-    @patch("brain.capabilities.get_capabilities",
+    @patch("neuralclaw.brain.capabilities.get_capabilities",
            return_value=MagicMock(supports_tools=True))
-    @patch("agent.orchestrator.bind_session")
-    @patch("agent.orchestrator.clear_session")
+    @patch("neuralclaw.agent.orchestrator.bind_session")
+    @patch("neuralclaw.agent.orchestrator.clear_session")
     async def test_returns_turn_result(self, _clr, _bind, _caps):
         orc, _, _ = _make_orchestrator(
             lambda **kw: _make_llm_response(content="Hi!")
@@ -355,10 +355,10 @@ class TestRunTurn:
         assert isinstance(result, TurnResult)
         assert result.status == TurnStatus.SUCCESS
 
-    @patch("brain.capabilities.get_capabilities",
+    @patch("neuralclaw.brain.capabilities.get_capabilities",
            return_value=MagicMock(supports_tools=True))
-    @patch("agent.orchestrator.bind_session")
-    @patch("agent.orchestrator.clear_session")
+    @patch("neuralclaw.agent.orchestrator.bind_session")
+    @patch("neuralclaw.agent.orchestrator.clear_session")
     async def test_timeout_returns_turn_result(self, _clr, _bind, _caps):
         """Turn timeout → TurnResult with TIMEOUT status, never raises."""
         async def _hang(**kw):
@@ -370,8 +370,8 @@ class TestRunTurn:
         assert isinstance(result, TurnResult)
         assert result.status == TurnStatus.TIMEOUT
 
-    @patch("agent.orchestrator.bind_session")
-    @patch("agent.orchestrator.clear_session")
+    @patch("neuralclaw.agent.orchestrator.bind_session")
+    @patch("neuralclaw.agent.orchestrator.clear_session")
     async def test_never_raises_on_crash(self, _clr, _bind):
         """Even a crash inside _agent_loop must produce an ERROR TurnResult."""
         orc, _, _ = _make_orchestrator(
@@ -385,8 +385,8 @@ class TestRunTurn:
         assert isinstance(result, TurnResult)
         assert result.status == TurnStatus.ERROR
 
-    @patch("agent.orchestrator.bind_session")
-    @patch("agent.orchestrator.clear_session")
+    @patch("neuralclaw.agent.orchestrator.bind_session")
+    @patch("neuralclaw.agent.orchestrator.clear_session")
     async def test_duration_ms_populated(self, _clr, _bind):
         orc, _, _ = _make_orchestrator(
             lambda **kw: _make_llm_response()
@@ -465,7 +465,7 @@ class TestExecutor:
         session = _mock_session()
 
         # Patch asyncio.create_task so we can verify memory recording
-        with patch("agent.executor.asyncio.create_task") as mock_task:
+        with patch("neuralclaw.agent.executor.asyncio.create_task") as mock_task:
             await executor.dispatch(btc, session)
             mock_task.assert_called_once()
 

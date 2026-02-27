@@ -49,19 +49,19 @@ sys.modules.setdefault("structlog.stdlib", structlog_stub.stdlib)
 sys.modules.setdefault("structlog.contextvars", structlog_stub.contextvars)
 # ─────────────────────────────────────────────────────────────────────────────
 
-from skills.clawhub.bridge_parser import parse_clawhub_skill_md, _detect_tier, ClawhubRequires
-from skills.clawhub.clawhub_skill import build_neuralclaw_manifest
-from skills.clawhub.bridge_loader import ClawhubBridgeLoader
-from skills.clawhub.bridge_executor import (
+from neuralclaw.skills.clawhub.bridge_parser import parse_clawhub_skill_md, _detect_tier, ClawhubRequires
+from neuralclaw.skills.clawhub.clawhub_skill import build_neuralclaw_manifest
+from neuralclaw.skills.clawhub.bridge_loader import ClawhubBridgeLoader
+from neuralclaw.skills.clawhub.bridge_executor import (
     HttpApiExecutor, PromptOnlyExecutor, create_executor,
 )
-from skills.registry import SkillRegistry
-from skills.types import RiskLevel, SkillCall, SafetyDecision, SafetyStatus, TrustLevel
+from neuralclaw.skills.registry import SkillRegistry
+from neuralclaw.skills.types import RiskLevel, SkillCall, SafetyDecision, SafetyStatus, TrustLevel
 
 
 def _test_llm_config():
     """Create a BrainLLMConfig for testing (replaces removed gpt-4o hardcode)."""
-    from brain.types import LLMConfig as BrainLLMConfig
+    from neuralclaw.brain.types import LLMConfig as BrainLLMConfig
     return BrainLLMConfig(model="test-model", temperature=0.3, max_tokens=4096)
 
 
@@ -207,7 +207,7 @@ class TestParserTierDetection:
 
     def test_detect_tier_direct_with_install_directives(self):
         """Install directives always push to Tier 3."""
-        from skills.clawhub.bridge_parser import ClawhubInstallDirective
+        from neuralclaw.skills.clawhub.bridge_parser import ClawhubInstallDirective
         req = ClawhubRequires(bins=["curl"])
         install = [ClawhubInstallDirective(kind="brew", formula="curl")]
         assert _detect_tier(req, install) == 3
@@ -307,8 +307,8 @@ class TestBridgeLoaderRegistration:
         """Second skill with same name should not overwrite the first."""
         skill_dir = _write_skill_dir(tmp_path, NOTION_SKILL_MD_FIXED)
         # Pre-register a skill named 'notion'
-        from skills.base import SkillBase
-        from skills.types import SkillManifest
+        from neuralclaw.skills.base import SkillBase
+        from neuralclaw.skills.types import SkillManifest
         dummy_manifest = SkillManifest(
             name="notion",
             version="0.0.1",
@@ -469,8 +469,8 @@ class TestFullPipeline:
     @pytest.mark.asyncio
     async def test_notion_skill_dispatches_via_bus(self, tmp_path):
         """End-to-end: load skill → register → dispatch through SkillBus."""
-        from skills.bus import SkillBus
-        from safety.safety_kernel import SafetyKernel
+        from neuralclaw.skills.bus import SkillBus
+        from neuralclaw.safety.safety_kernel import SafetyKernel
 
         skill_dir = _write_skill_dir(tmp_path, NOTION_SKILL_MD_FIXED)
 
@@ -512,8 +512,8 @@ class TestFullPipeline:
     @pytest.mark.asyncio
     async def test_notion_skill_blocked_without_env(self, tmp_path):
         """If NOTION_API_KEY is missing, dispatch returns an error result (not a crash)."""
-        from skills.bus import SkillBus
-        from safety.safety_kernel import SafetyKernel
+        from neuralclaw.skills.bus import SkillBus
+        from neuralclaw.safety.safety_kernel import SafetyKernel
 
         skill_dir = _write_skill_dir(tmp_path, NOTION_SKILL_MD_FIXED)
 

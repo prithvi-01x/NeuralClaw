@@ -30,37 +30,37 @@ from unittest.mock import patch
 
 def _make_settings(**overrides):
     """Build a Settings object from keyword overrides (no YAML file needed)."""
-    from config.settings import Settings
+    from neuralclaw.config.settings import Settings
     return Settings(**overrides)
 
 
 def _make_terminal_cfg(**kwargs):
-    from config.settings import TerminalToolConfig
+    from neuralclaw.config.settings import TerminalToolConfig
     return TerminalToolConfig(**kwargs)
 
 
 def _make_filesystem_cfg(**kwargs):
-    from config.settings import FilesystemToolConfig
+    from neuralclaw.config.settings import FilesystemToolConfig
     return FilesystemToolConfig(**kwargs)
 
 
 def _make_agent_cfg(**kwargs):
-    from config.settings import AgentConfig
+    from neuralclaw.config.settings import AgentConfig
     return AgentConfig(**kwargs)
 
 
 def _make_llm_cfg(**kwargs):
-    from config.settings import LLMConfig
+    from neuralclaw.config.settings import LLMConfig
     return LLMConfig(**kwargs)
 
 
 def _make_logging_cfg(**kwargs):
-    from config.settings import LoggingConfig
+    from neuralclaw.config.settings import LoggingConfig
     return LoggingConfig(**kwargs)
 
 
 def _make_safety_cfg(**kwargs):
-    from config.settings import SafetyConfig
+    from neuralclaw.config.settings import SafetyConfig
     return SafetyConfig(**kwargs)
 
 
@@ -234,7 +234,7 @@ class TestSafetyConfig:
 class TestValidateAll:
     def _settings_with_key(self, provider: str, key_value: str | None = "sk-test"):
         """Build Settings with a given provider + optional API key."""
-        from config.settings import Settings, LLMConfig
+        from neuralclaw.config.settings import Settings, LLMConfig
         env_map = {
             "openai":     {"OPENAI_API_KEY":     key_value},
             "anthropic":  {"ANTHROPIC_API_KEY":  key_value},
@@ -256,26 +256,26 @@ class TestValidateAll:
 
     def test_passes_with_ollama_no_key(self):
         """Ollama needs no API key — validate_all should pass."""
-        from config.settings import Settings, LLMConfig
+        from neuralclaw.config.settings import Settings, LLMConfig
         s = Settings(llm=LLMConfig(default_provider="ollama"))
         s.validate_all()  # should not raise
 
     def test_fails_missing_openai_key(self):
-        from config.settings import ConfigError, Settings, LLMConfig
+        from neuralclaw.config.settings import ConfigError, Settings, LLMConfig
         s = Settings(llm=LLMConfig(default_provider="openai"))
         with pytest.raises(ConfigError) as exc_info:
             s.validate_all()
         assert "OPENAI_API_KEY" in str(exc_info.value)
 
     def test_fails_missing_anthropic_key(self):
-        from config.settings import ConfigError, Settings, LLMConfig
+        from neuralclaw.config.settings import ConfigError, Settings, LLMConfig
         s = Settings(llm=LLMConfig(default_provider="anthropic"))
         with pytest.raises(ConfigError) as exc_info:
             s.validate_all()
         assert "ANTHROPIC_API_KEY" in str(exc_info.value)
 
     def test_passes_with_key_present(self):
-        from config.settings import Settings, LLMConfig
+        from neuralclaw.config.settings import Settings, LLMConfig
         s = Settings(
             llm=LLMConfig(default_provider="openai"),
             OPENAI_API_KEY="sk-test-key",
@@ -284,7 +284,7 @@ class TestValidateAll:
 
     def test_error_message_is_numbered(self):
         """validate_all lists problems with numbers."""
-        from config.settings import ConfigError, Settings, LLMConfig
+        from neuralclaw.config.settings import ConfigError, Settings, LLMConfig
         s = Settings(llm=LLMConfig(default_provider="openai"))
         with pytest.raises(ConfigError) as exc_info:
             s.validate_all()
@@ -293,7 +293,7 @@ class TestValidateAll:
 
     def test_multiple_errors_all_reported(self):
         """All problems are collected and reported, not just the first."""
-        from config.settings import ConfigError, Settings, LLMConfig
+        from neuralclaw.config.settings import ConfigError, Settings, LLMConfig
         # Missing key + empty timezone = 2 errors
         s = Settings(llm=LLMConfig(default_provider="openai"))
         # Manually corrupt timezone to trigger second error
@@ -304,7 +304,7 @@ class TestValidateAll:
         assert "2" in msg or "problem" in msg.lower()
 
     def test_fallback_provider_missing_key_caught(self):
-        from config.settings import ConfigError, Settings, LLMConfig
+        from neuralclaw.config.settings import ConfigError, Settings, LLMConfig
         s = Settings(
             llm=LLMConfig(
                 default_provider="ollama",
@@ -322,7 +322,7 @@ class TestValidateAll:
 class TestConfigPathResolution:
     def test_explicit_path_takes_priority(self, tmp_path):
         """Explicit config_path arg overrides env var."""
-        from config.settings import _resolve_config_path
+        from neuralclaw.config.settings import _resolve_config_path
         cfg_file = tmp_path / "custom.yaml"
         cfg_file.write_text("")
         env_file = tmp_path / "env.yaml"
@@ -333,7 +333,7 @@ class TestConfigPathResolution:
 
     def test_env_var_used_when_no_explicit_path(self, tmp_path):
         """NEURALCLAW_CONFIG env var is used when no explicit path given."""
-        from config.settings import _resolve_config_path
+        from neuralclaw.config.settings import _resolve_config_path
         env_file = tmp_path / "env_config.yaml"
 
         with patch.dict(os.environ, {"NEURALCLAW_CONFIG": str(env_file)}):
@@ -342,7 +342,7 @@ class TestConfigPathResolution:
 
     def test_default_path_when_no_arg_no_env(self):
         """Falls back to config/config.yaml when nothing is set."""
-        from config.settings import _resolve_config_path
+        from neuralclaw.config.settings import _resolve_config_path
         env = {k: v for k, v in os.environ.items() if k != "NEURALCLAW_CONFIG"}
         with patch.dict(os.environ, env, clear=True):
             resolved = _resolve_config_path(None)
@@ -350,8 +350,8 @@ class TestConfigPathResolution:
 
     def test_load_settings_from_file(self, tmp_path):
         """load_settings reads a custom YAML file correctly."""
-        from config.settings import load_settings, _singleton
-        import config.settings as cs
+        from neuralclaw.config.settings import load_settings, _singleton
+        import neuralclaw.config.settings as cs
 
         cfg_file = tmp_path / "test_config.yaml"
         cfg_file.write_text(textwrap.dedent("""

@@ -36,7 +36,7 @@ _ROOT = Path(__file__).parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from interfaces.voice import (
+from neuralclaw.interfaces.voice import (
     VoiceConfig,
     VoiceError,
     VoiceModelError,
@@ -44,7 +44,7 @@ from interfaces.voice import (
     VoiceTranscriptionError,
     VoiceInterface,
 )
-from exceptions import NeuralClawError
+from neuralclaw.exceptions import NeuralClawError
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,36 +184,36 @@ class TestVoiceConfig:
 class TestSettingsVoiceConfig:
 
     def test_voice_field_defaults(self):
-        from config.settings import Settings
+        from neuralclaw.config.settings import Settings
         # Build a minimal settings without loading from disk
         s = Settings.model_construct(
             openai_api_key="sk-test",
             bytez_api_key="bz-test",
         )
         # voice field should be a VoiceConfig with defaults
-        from config.settings import VoiceConfig as SettingsVoiceConfig
+        from neuralclaw.config.settings import VoiceConfig as SettingsVoiceConfig
         assert isinstance(s.voice, SettingsVoiceConfig)
 
     def test_voice_config_whisper_device_validator(self):
-        from config.settings import VoiceConfig as SettingsVoiceConfig
+        from neuralclaw.config.settings import VoiceConfig as SettingsVoiceConfig
         from pydantic import ValidationError
         with pytest.raises(ValidationError):
             SettingsVoiceConfig(whisper_device="tpu")  # invalid
 
     def test_voice_config_vad_aggressiveness_validator(self):
-        from config.settings import VoiceConfig as SettingsVoiceConfig
+        from neuralclaw.config.settings import VoiceConfig as SettingsVoiceConfig
         from pydantic import ValidationError
         with pytest.raises(ValidationError):
             SettingsVoiceConfig(vad_aggressiveness=5)  # must be 0-3
 
     def test_voice_config_sample_rate_validator(self):
-        from config.settings import VoiceConfig as SettingsVoiceConfig
+        from neuralclaw.config.settings import VoiceConfig as SettingsVoiceConfig
         from pydantic import ValidationError
         with pytest.raises(ValidationError):
             SettingsVoiceConfig(sample_rate=44100)  # not in allowed set
 
     def test_voice_raw_property_returns_dict(self):
-        from config.settings import VoiceConfig as SettingsVoiceConfig
+        from neuralclaw.config.settings import VoiceConfig as SettingsVoiceConfig
         s = MagicMock()
         s.voice = SettingsVoiceConfig()
         s.voice_raw = s.voice.model_dump()
@@ -222,7 +222,7 @@ class TestSettingsVoiceConfig:
 
     def test_voice_in_known_sections(self):
         """'voice' must be in _KNOWN_SECTIONS so config.yaml keys are parsed."""
-        import inspect, config.settings as cs
+        import inspect, neuralclaw.config.settings as cs
         src = inspect.getsource(cs.load_settings)
         assert '"voice"' in src or "'voice'" in src
 
@@ -626,10 +626,10 @@ class TestRunVoiceEntryPoint:
 
     @pytest.mark.asyncio
     async def test_run_voice_handles_model_error(self, capsys):
-        from interfaces.voice import run_voice
+        from neuralclaw.interfaces.voice import run_voice
         log_ = MagicMock()
 
-        with patch("interfaces.voice.VoiceInterface") as MockVI:
+        with patch("neuralclaw.interfaces.voice.VoiceInterface") as MockVI:
             instance = MockVI.return_value
             instance.start = AsyncMock(side_effect=VoiceModelError("no whisper"))
             instance.stop = AsyncMock()
@@ -641,10 +641,10 @@ class TestRunVoiceEntryPoint:
 
     @pytest.mark.asyncio
     async def test_run_voice_handles_keyboard_interrupt(self):
-        from interfaces.voice import run_voice
+        from neuralclaw.interfaces.voice import run_voice
         log_ = MagicMock()
 
-        with patch("interfaces.voice.VoiceInterface") as MockVI:
+        with patch("neuralclaw.interfaces.voice.VoiceInterface") as MockVI:
             instance = MockVI.return_value
             instance.start = AsyncMock(side_effect=KeyboardInterrupt)
             instance.stop = AsyncMock()
@@ -660,13 +660,13 @@ class TestRunVoiceEntryPoint:
 class TestMainVoiceArg:
 
     def test_voice_is_valid_interface_choice(self):
-        import argparse, main as m
+        import argparse, neuralclaw.main as m
         parser = argparse.ArgumentParser()
         parser.add_argument("--interface", choices=["cli", "telegram", "voice"], default="cli")
         args = parser.parse_args(["--interface", "voice"])
         assert args.interface == "voice"
 
     def test_main_has_run_voice_function(self):
-        import main as m
+        import neuralclaw.main as m
         assert hasattr(m, "_run_voice")
         assert asyncio.iscoroutinefunction(m._run_voice)

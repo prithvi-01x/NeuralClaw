@@ -1,0 +1,66 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .dockerignore — Keep the build context small
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist/
+build/
+*.egg
+
+# Virtual envs
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data / runtime (mounted at runtime, not baked into image)
+data/
+*.db
+
+# Secrets
+.env
+.env.*
+
+# Tests (not needed in production image)
+tests/
+htmlcov/
+.coverage
+.pytest_cache/
+.ruff_cache/
+
+# Docs / misc
+docs/
+*.md
+!README.md
+!LICENSE
+
+# CI
+.github/
+.gitlab-ci.yml
+
+# Agents
+.agents/
+.agent/
+_agents/
+_agent/
+.gemini/
+
+# Docker (avoid recursive copy)
+docker/
+
+# Temp
+tmp/
+/tmp/

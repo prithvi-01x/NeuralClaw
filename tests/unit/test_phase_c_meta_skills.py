@@ -33,7 +33,7 @@ _ROOT = Path(__file__).parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from skills.types import RiskLevel, SkillCall, SkillManifest, SkillResult, TrustLevel
+from neuralclaw.skills.types import RiskLevel, SkillCall, SkillManifest, SkillResult, TrustLevel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -109,11 +109,11 @@ def _kwargs(bus=None, task_store=None, session=None) -> dict:
 # Import meta-skills (must be importable without running the full kernel)
 # ─────────────────────────────────────────────────────────────────────────────
 
-from skills.plugins.meta_recon_pipeline import MetaReconPipelineSkill
-from skills.plugins.meta_daily_assistant import MetaDailyAssistantSkill
-from skills.plugins.meta_repo_audit import MetaRepoAuditSkill
-from skills.plugins.meta_system_maintenance import MetaSystemMaintenanceSkill
-from skills.plugins.meta_autonomous_research import MetaAutonomousResearchSkill
+from neuralclaw.skills.plugins.meta_recon_pipeline import MetaReconPipelineSkill
+from neuralclaw.skills.plugins.meta_daily_assistant import MetaDailyAssistantSkill
+from neuralclaw.skills.plugins.meta_repo_audit import MetaRepoAuditSkill
+from neuralclaw.skills.plugins.meta_system_maintenance import MetaSystemMaintenanceSkill
+from neuralclaw.skills.plugins.meta_autonomous_research import MetaAutonomousResearchSkill
 
 ALL_META_SKILLS = [
     MetaReconPipelineSkill,
@@ -144,7 +144,7 @@ class TestManifestValidity:
 
     @pytest.mark.parametrize("cls", ALL_META_SKILLS)
     def test_version_semver(self, cls):
-        from skills.base import _is_semver
+        from neuralclaw.skills.base import _is_semver
         assert _is_semver(cls.manifest.version), f"Bad semver: {cls.manifest.version}"
 
     @pytest.mark.parametrize("cls", ALL_META_SKILLS)
@@ -294,13 +294,13 @@ class TestReconPipelineTier1:
 
     @pytest.mark.asyncio
     async def test_validate_rejects_url_as_target(self):
-        from skills.types import SkillValidationError
+        from neuralclaw.skills.types import SkillValidationError
         with pytest.raises(SkillValidationError):
             await self.skill.validate(target="https://example.com")
 
     @pytest.mark.asyncio
     async def test_validate_rejects_empty_target(self):
-        from skills.types import SkillValidationError
+        from neuralclaw.skills.types import SkillValidationError
         with pytest.raises(SkillValidationError):
             await self.skill.validate(target="")
 
@@ -471,7 +471,7 @@ class TestRepoAuditTier1:
 
     @pytest.mark.asyncio
     async def test_validate_rejects_missing_path(self):
-        from skills.types import SkillValidationError
+        from neuralclaw.skills.types import SkillValidationError
         with pytest.raises(SkillValidationError):
             await self.skill.validate(repo_path="/this/path/does/not/exist/anywhere")
 
@@ -641,13 +641,13 @@ class TestAutonomousResearchTier1:
 
     @pytest.mark.asyncio
     async def test_validate_rejects_empty_topic(self):
-        from skills.types import SkillValidationError
+        from neuralclaw.skills.types import SkillValidationError
         with pytest.raises(SkillValidationError):
             await self.skill.validate(topic="")
 
     @pytest.mark.asyncio
     async def test_validate_rejects_overlong_topic(self):
-        from skills.types import SkillValidationError
+        from neuralclaw.skills.types import SkillValidationError
         with pytest.raises(SkillValidationError):
             await self.skill.validate(topic="x" * 501)
 

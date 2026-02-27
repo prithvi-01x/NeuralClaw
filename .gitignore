@@ -31,3 +31,9 @@ test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
+
+# Build / Packaging
+dist/
+build/
+*.egg-info/
+src/*.egg-info/

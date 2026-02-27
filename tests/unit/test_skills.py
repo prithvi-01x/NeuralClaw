@@ -37,10 +37,10 @@ _ROOT = Path(__file__).parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from skills.base import SkillBase, _is_semver
-from skills.loader import SkillLoader
-from skills.registry import SkillRegistry
-from skills.types import (
+from neuralclaw.skills.base import SkillBase, _is_semver
+from neuralclaw.skills.loader import SkillLoader
+from neuralclaw.skills.registry import SkillRegistry
+from neuralclaw.skills.types import (
     RiskLevel,
     SkillCall,
     SkillManifest,
@@ -430,8 +430,8 @@ class TestSkillLoader:
     def test_loads_skills_from_dir(self, tmp_path):
         skill_file = tmp_path / "my_skill.py"
         skill_file.write_text(textwrap.dedent("""
-            from skills.base import SkillBase
-            from skills.types import SkillManifest, RiskLevel, SkillResult
+            from neuralclaw.skills.base import SkillBase
+            from neuralclaw.skills.types import SkillManifest, RiskLevel, SkillResult
 
             class MySkill(SkillBase):
                 manifest = SkillManifest(
@@ -469,8 +469,8 @@ class TestSkillLoader:
         bad_file.write_text("raise ImportError('missing dep')\n")
         good_file = tmp_path / "good_skill.py"
         good_file.write_text(textwrap.dedent("""
-            from skills.base import SkillBase
-            from skills.types import SkillManifest, RiskLevel, SkillResult
+            from neuralclaw.skills.base import SkillBase
+            from neuralclaw.skills.types import SkillManifest, RiskLevel, SkillResult
 
             class GoodSkill(SkillBase):
                 manifest = SkillManifest(
@@ -494,8 +494,8 @@ class TestSkillLoader:
     def test_duplicate_name_across_files_raises(self, tmp_path):
         for fname in ("skill_a.py", "skill_b.py"):
             (tmp_path / fname).write_text(textwrap.dedent("""
-                from skills.base import SkillBase
-                from skills.types import SkillManifest, RiskLevel, SkillResult
+                from neuralclaw.skills.base import SkillBase
+                from neuralclaw.skills.types import SkillManifest, RiskLevel, SkillResult
 
                 class DupSkill(SkillBase):
                     manifest = SkillManifest(
@@ -518,8 +518,8 @@ class TestSkillLoader:
     def test_bad_manifest_raises_at_load(self, tmp_path):
         bad_file = tmp_path / "bad_manifest.py"
         bad_file.write_text(textwrap.dedent("""
-            from skills.base import SkillBase
-            from skills.types import SkillManifest, RiskLevel, SkillResult
+            from neuralclaw.skills.base import SkillBase
+            from neuralclaw.skills.types import SkillManifest, RiskLevel, SkillResult
 
             class BadManifestSkill(SkillBase):
                 manifest = SkillManifest(
@@ -541,8 +541,8 @@ class TestSkillLoader:
 
     def test_discover_classes_returns_list(self, tmp_path):
         (tmp_path / "test_skill.py").write_text(textwrap.dedent("""
-            from skills.base import SkillBase
-            from skills.types import SkillManifest, RiskLevel, SkillResult
+            from neuralclaw.skills.base import SkillBase
+            from neuralclaw.skills.types import SkillManifest, RiskLevel, SkillResult
 
             class TestSkill(SkillBase):
                 manifest = SkillManifest(
@@ -567,7 +567,7 @@ class TestSkillLoader:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_bus(skill_instances, safety=None, timeout=5.0, on_confirm=None):
-    from skills.bus import SkillBus
+    from neuralclaw.skills.bus import SkillBus
     reg = _registry_with(*skill_instances)
     return SkillBus(reg, safety_kernel=safety, default_timeout_seconds=timeout, on_confirm_needed=on_confirm)
 
@@ -584,7 +584,7 @@ class TestSkillBusDispatch:
 
     @pytest.mark.asyncio
     async def test_disabled_skill_returns_fail(self):
-        from skills.bus import SkillBus
+        from neuralclaw.skills.bus import SkillBus
 
         class DisabledSkill(SkillBase):
             manifest = _manifest(name="disabled_skill", enabled=False)
@@ -666,7 +666,7 @@ class TestSkillBusDispatch:
 
     @pytest.mark.asyncio
     async def test_output_truncated_when_too_long(self):
-        from skills.bus import MAX_RESULT_CHARS
+        from neuralclaw.skills.bus import MAX_RESULT_CHARS
 
         class BigOutputSkill(SkillBase):
             manifest = _manifest(name="big_output_skill")
@@ -682,7 +682,7 @@ class TestSkillBusDispatch:
     @pytest.mark.asyncio
     async def test_safety_blocked_returns_fail(self):
         # Mock a safety kernel that returns BLOCKED
-        from skills.types import SafetyDecision, SafetyStatus, RiskLevel as LR
+        from neuralclaw.skills.types import SafetyDecision, SafetyStatus, RiskLevel as LR
         blocked_decision = SafetyDecision(
             status=SafetyStatus.BLOCKED,
             reason="test block",
@@ -701,7 +701,7 @@ class TestSkillBusDispatch:
 
     @pytest.mark.asyncio
     async def test_safety_confirm_denied_returns_fail(self):
-        from skills.types import SafetyDecision, SafetyStatus, RiskLevel as LR
+        from neuralclaw.skills.types import SafetyDecision, SafetyStatus, RiskLevel as LR
         confirm_decision = SafetyDecision(
             status=SafetyStatus.CONFIRM_NEEDED,
             reason="risky",
@@ -720,7 +720,7 @@ class TestSkillBusDispatch:
 
     @pytest.mark.asyncio
     async def test_safety_confirm_approved_executes(self):
-        from skills.types import SafetyDecision, SafetyStatus, RiskLevel as LR
+        from neuralclaw.skills.types import SafetyDecision, SafetyStatus, RiskLevel as LR
         confirm_decision = SafetyDecision(
             status=SafetyStatus.CONFIRM_NEEDED,
             reason="risky",
@@ -739,7 +739,7 @@ class TestSkillBusDispatch:
 
     @pytest.mark.asyncio
     async def test_per_call_confirm_overrides_bus_confirm(self):
-        from skills.types import SafetyDecision, SafetyStatus, RiskLevel as LR
+        from neuralclaw.skills.types import SafetyDecision, SafetyStatus, RiskLevel as LR
         confirm_decision = SafetyDecision(
             status=SafetyStatus.CONFIRM_NEEDED,
             reason="risky",
@@ -814,7 +814,7 @@ class TestBuiltinIntegrity:
     @pytest.fixture(scope="class")
     def builtin_registry(self):
         loader = SkillLoader()
-        builtin_dir = Path(__file__).parent.parent.parent / "skills" / "builtin"
+        builtin_dir = Path(__file__).parent.parent.parent / "src" / "neuralclaw" / "skills" / "builtin"
         return loader.load_all([builtin_dir])
 
     def test_all_builtins_load(self, builtin_registry):
@@ -913,8 +913,8 @@ class TestPluginDirectory:
         """
         plugin = tmp_path / "echo_skill.py"
         plugin.write_text(textwrap.dedent("""
-            from skills.base import SkillBase
-            from skills.types import SkillManifest, RiskLevel, SkillResult
+            from neuralclaw.skills.base import SkillBase
+            from neuralclaw.skills.types import SkillManifest, RiskLevel, SkillResult
 
             class EchoSkill(SkillBase):
                 manifest = SkillManifest(

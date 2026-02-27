@@ -16,17 +16,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from brain.types import Message, Role
-from memory.short_term import (
+from neuralclaw.brain.types import Message, Role
+from neuralclaw.memory.short_term import (
     ConversationBuffer,
     SessionState,
     ShortTermMemory,
     ToolResultEntry,
     ToolResultCache,
 )
-from memory.long_term import MemoryEntry, LongTermMemory
-from memory.episodic import EpisodicMemory, Episode
-from memory.memory_manager import MemoryManager
+from neuralclaw.memory.long_term import MemoryEntry, LongTermMemory
+from neuralclaw.memory.episodic import EpisodicMemory, Episode
+from neuralclaw.memory.memory_manager import MemoryManager
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -439,7 +439,7 @@ class TestMemoryManager:
 
     @pytest.mark.asyncio
     async def test_requires_init(self):
-        from exceptions import MemoryError as MemorySubsystemError
+        from neuralclaw.exceptions import MemoryError as MemorySubsystemError
         mm = MemoryManager()
         with pytest.raises(MemorySubsystemError, match="not initialized"):
             await mm.store("text")

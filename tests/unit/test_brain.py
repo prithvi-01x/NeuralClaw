@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from brain import (
+from neuralclaw.brain import (
     LLMClientFactory,
     LLMConfig,
     LLMConnectionError,
@@ -28,7 +28,7 @@ from brain import (
     ToolResult,
     ToolSchema,
 )
-from brain.types import FinishReason, Provider, TokenUsage
+from neuralclaw.brain.types import FinishReason, Provider, TokenUsage
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,22 +127,22 @@ class TestLLMConfig:
 
 class TestLLMClientFactory:
     def test_create_openai(self):
-        from brain.openai_client import OpenAIClient
+        from neuralclaw.brain.openai_client import OpenAIClient
         client = LLMClientFactory.create("openai", api_key="sk-test")
         assert isinstance(client, OpenAIClient)
 
     def test_create_anthropic(self):
-        from brain.anthropic_client import AnthropicClient
+        from neuralclaw.brain.anthropic_client import AnthropicClient
         client = LLMClientFactory.create("anthropic", api_key="sk-ant-test")
         assert isinstance(client, AnthropicClient)
 
     def test_create_ollama(self):
-        from brain.ollama_client import OllamaClient
+        from neuralclaw.brain.ollama_client import OllamaClient
         client = LLMClientFactory.create("ollama")
         assert isinstance(client, OllamaClient)
 
     def test_create_openrouter(self):
-        from brain.openrouter_client import OpenRouterClient
+        from neuralclaw.brain.openrouter_client import OpenRouterClient
         client = LLMClientFactory.create("openrouter", api_key="sk-or-test")
         assert isinstance(client, OpenRouterClient)
 
@@ -157,10 +157,10 @@ class TestLLMClientFactory:
         if "google.genai.types" not in sys.modules:
             sys.modules["google.genai.types"] = types.ModuleType("google.genai.types")
         import importlib
-        import brain.gemini_client as _gc_mod
+        import neuralclaw.brain.gemini_client as _gc_mod
         importlib.reload(_gc_mod)
-        with patch("brain.gemini_client.genai"):
-            from brain.gemini_client import GeminiClient
+        with patch("neuralclaw.brain.gemini_client.genai"):
+            from neuralclaw.brain.gemini_client import GeminiClient
             client = LLMClientFactory.create("gemini", api_key="AIza-test")
             assert isinstance(client, GeminiClient)
 
@@ -177,7 +177,7 @@ class TestLLMClientFactory:
             LLMClientFactory.create("anthropic", api_key=None)
 
     def test_case_insensitive_provider(self):
-        from brain.openai_client import OpenAIClient
+        from neuralclaw.brain.openai_client import OpenAIClient
         client = LLMClientFactory.create("OpenAI", api_key="sk-test")
         assert isinstance(client, OpenAIClient)
 
@@ -196,7 +196,7 @@ class TestLLMClientFactory:
 class TestOpenAIClient:
     @pytest.fixture
     def client(self):
-        from brain.openai_client import OpenAIClient
+        from neuralclaw.brain.openai_client import OpenAIClient
         return OpenAIClient(api_key="sk-test-fake")
 
     def _make_mock_response(
@@ -287,7 +287,7 @@ class TestOpenAIClient:
         client._client.chat.completions.create = AsyncMock(
             side_effect=oai.RateLimitError("Rate limit", response=MagicMock(), body={})
         )
-        from brain.llm_client import LLMRateLimitError
+        from neuralclaw.brain.llm_client import LLMRateLimitError
         with pytest.raises(LLMRateLimitError):
             await client.generate(basic_messages, basic_config)
 
@@ -318,7 +318,7 @@ class TestOpenAIClient:
 class TestAnthropicClient:
     @pytest.fixture
     def client(self):
-        from brain.anthropic_client import AnthropicClient
+        from neuralclaw.brain.anthropic_client import AnthropicClient
         return AnthropicClient(api_key="sk-ant-test-fake")
 
     def _make_mock_response(
@@ -427,12 +427,12 @@ class TestAnthropicClient:
 class TestOllamaClient:
     @pytest.fixture
     def client(self):
-        from brain.ollama_client import OllamaClient
+        from neuralclaw.brain.ollama_client import OllamaClient
         return OllamaClient(base_url="http://localhost:11434/v1")
 
     @pytest.mark.asyncio
     async def test_generate_delegates_to_openai_client(self, client, basic_messages):
-        from brain.types import LLMResponse, FinishReason, TokenUsage
+        from neuralclaw.brain.types import LLMResponse, FinishReason, TokenUsage
         config = LLMConfig(model="llama3.1")
 
         mock_response = LLMResponse(
@@ -487,12 +487,12 @@ class TestOllamaClient:
 class TestOpenRouterClient:
     @pytest.fixture
     def client(self):
-        from brain.openrouter_client import OpenRouterClient
+        from neuralclaw.brain.openrouter_client import OpenRouterClient
         return OpenRouterClient(api_key="sk-or-test")
 
     @pytest.mark.asyncio
     async def test_generate_sets_provider(self, client, basic_messages):
-        from brain.types import LLMResponse, FinishReason, TokenUsage
+        from neuralclaw.brain.types import LLMResponse, FinishReason, TokenUsage
         config = LLMConfig(model="openai/gpt-4o")
 
         mock_response = LLMResponse(
@@ -526,12 +526,12 @@ class TestOpenRouterClient:
 
 class TestLLMResponse:
     def test_has_tool_calls_false_when_empty(self):
-        from brain.types import LLMResponse
+        from neuralclaw.brain.types import LLMResponse
         r = LLMResponse(content="hello", finish_reason=FinishReason.STOP)
         assert not r.has_tool_calls
 
     def test_has_tool_calls_true(self):
-        from brain.types import LLMResponse
+        from neuralclaw.brain.types import LLMResponse
         r = LLMResponse(
             tool_calls=[ToolCall(id="x", name="foo", arguments={})],
             finish_reason=FinishReason.TOOL_CALLS,
@@ -539,12 +539,12 @@ class TestLLMResponse:
         assert r.has_tool_calls
 
     def test_is_complete(self):
-        from brain.types import LLMResponse
+        from neuralclaw.brain.types import LLMResponse
         r = LLMResponse(content="done", finish_reason=FinishReason.STOP)
         assert r.is_complete
 
     def test_not_complete_when_tool_calls(self):
-        from brain.types import LLMResponse
+        from neuralclaw.brain.types import LLMResponse
         r = LLMResponse(
             tool_calls=[ToolCall(id="x", name="foo", arguments={})],
             finish_reason=FinishReason.TOOL_CALLS,

@@ -58,7 +58,7 @@ except ImportError:
         def __init__(self, **kw):
             self._no_color = kw.get("no_color", False)
         def print(self, *a, **kw):
-            from interfaces.branding import safe_print
+            from neuralclaw.interfaces.branding import safe_print
             safe_print(*a)
 
     class Panel:  # type: ignore[no-redef]
@@ -261,7 +261,7 @@ def cmd_install(args) -> int:
     root = require_root(args)
     sys.path.insert(0, str(root))
     try:
-        from onboard.skill_installer import run_install
+        from neuralclaw.onboard.skill_installer import run_install
         return run_install(args.slug, force=args.force)
     except ImportError:
         print("✗  Could not import skill installer.", file=sys.stderr)
@@ -566,8 +566,8 @@ def cmd_create(args) -> int:
             {name} — NeuralClaw Skill
             {desc}
             """
-            from skills.base import SkillBase
-            from skills.types import SkillManifest, SkillResult, RiskLevel
+            from neuralclaw.skills.base import SkillBase
+            from neuralclaw.skills.types import SkillManifest, SkillResult, RiskLevel
 
             class {class_name}(SkillBase):
                 manifest = SkillManifest(

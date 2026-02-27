@@ -33,6 +33,7 @@ import pytest
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 _ROOT = Path(__file__).parent.parent.parent
+_SRC = _ROOT / "src" / "neuralclaw"
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -98,8 +99,8 @@ sys.modules.setdefault("PyQt6.QtWidgets", _pyqt6_mock.QtWidgets)
 sys.modules.setdefault("PyQt6.QtGui", _pyqt6_mock.QtGui)
 
 # ── Now safe to import our modules ────────────────────────────────────────────
-from app.state import AgentAppState, OverlayState, get_state
-from app.signals import NeuralClawSignals, get_signals
+from neuralclaw.app.state import AgentAppState, OverlayState, get_state
+from neuralclaw.app.signals import NeuralClawSignals, get_signals
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -553,7 +554,7 @@ class TestSettingsPhaseH:
 
     def _load_settings(self):
         try:
-            from config.settings import Settings
+            from neuralclaw.config.settings import Settings
             return Settings()
         except (ModuleNotFoundError, ImportError):
             return None
@@ -678,10 +679,10 @@ class TestGateConditions:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "overlay_mod",
-            _ROOT / "app" / "overlay.py",
+            _SRC / "app" / "overlay.py",
         )
         # Read the source and check the constant
-        src = (_ROOT / "app" / "overlay.py").read_text()
+        src = (_SRC / "app" / "overlay.py").read_text()
         # _FRAME_MS should be <= 33
         import re
         m = re.search(r"_FRAME_MS\s*=\s*(\d+)", src)
@@ -694,7 +695,7 @@ class TestGateConditions:
         GATE: Idle state must use low opacity (non-intrusive) per spec: '10% opacity'.
         Verify the alpha constant is <= 128 (50% of 255).
         """
-        src = (_ROOT / "app" / "overlay.py").read_text()
+        src = (_SRC / "app" / "overlay.py").read_text()
         # The idle background alpha should be low
         import re
         # Look for bg_alpha for idle state
@@ -708,7 +709,7 @@ class TestGateConditions:
         GATE: Error state must auto-clear in a reasonable time (1–10 seconds).
         Check the constant in overlay.py.
         """
-        src = (_ROOT / "app" / "overlay.py").read_text()
+        src = (_SRC / "app" / "overlay.py").read_text()
         import re
         m = re.search(r"monotonic\(\)\s*-\s*self\._error_since\s*>\s*([\d.]+)", src)
         assert m is not None, "Auto-clear timeout not found in overlay.py"
@@ -718,40 +719,40 @@ class TestGateConditions:
         )
 
     def test_signals_module_importable(self):
-        from app.signals import get_signals, NeuralClawSignals
+        from neuralclaw.app.signals import get_signals, NeuralClawSignals
         assert NeuralClawSignals is not None
 
     def test_state_module_importable(self):
-        from app.state import get_state, AgentAppState, OverlayState
+        from neuralclaw.app.state import get_state, AgentAppState, OverlayState
         assert AgentAppState is not None
 
     def test_overlay_module_importable(self):
         import importlib
         # Just check the source is valid Python
-        src = (_ROOT / "app" / "overlay.py").read_text()
+        src = (_SRC / "app" / "overlay.py").read_text()
         compile(src, "overlay.py", "exec")   # SyntaxError if broken
 
     def test_tray_module_importable(self):
-        src = (_ROOT / "app" / "tray.py").read_text()
+        src = (_SRC / "app" / "tray.py").read_text()
         compile(src, "tray.py", "exec")
 
     def test_main_window_module_importable(self):
-        src = (_ROOT / "app" / "main_window.py").read_text()
+        src = (_SRC / "app" / "main_window.py").read_text()
         compile(src, "main_window.py", "exec")
 
     def test_voice_app_interface_in_main(self):
         """GATE: --interface voice-app must be registered in main.py."""
-        src = (_ROOT / "main.py").read_text()
+        src = (_SRC / "main.py").read_text()
         assert "voice-app" in src, "--interface voice-app not found in main.py"
 
     def test_run_qt_app_exported(self):
         """GATE: run_qt_app must be importable from app."""
-        src = (_ROOT / "app" / "__init__.py").read_text()
+        src = (_SRC / "app" / "__init__.py").read_text()
         assert "run_qt_app" in src
 
     def test_app_signals_all_connected_in_overlay(self):
         """Every signal in NeuralClawSignals should be connected in overlay.py."""
-        src = (_ROOT / "app" / "overlay.py").read_text()
+        src = (_SRC / "app" / "overlay.py").read_text()
         expected_connections = [
             "wake_detected",
             "turn_started",
@@ -769,7 +770,7 @@ class TestGateConditions:
 
     def test_app_signals_all_connected_in_tray(self):
         """Every relevant signal should be connected in tray.py."""
-        src = (_ROOT / "app" / "tray.py").read_text()
+        src = (_SRC / "app" / "tray.py").read_text()
         expected = [
             "wake_detected",
             "turn_started",
@@ -786,7 +787,7 @@ class TestGateConditions:
             )
 
     def test_state_file_has_all_six_state_constants(self):
-        src = (_ROOT / "app" / "state.py").read_text()
+        src = (_SRC / "app" / "state.py").read_text()
         for state in ("IDLE", "LISTENING", "THINKING", "SPEAKING", "ERROR", "TASK_RUNNING"):
             assert state in src, f"State constant {state} missing from state.py"
 
@@ -797,7 +798,7 @@ class TestGateConditions:
         """
         import re
         for fname in ("overlay.py", "tray.py"):
-            src = (_ROOT / "app" / fname).read_text()
+            src = (_SRC / "app" / fname).read_text()
             # Find all pyqtSlot-decorated functions and check for await
             slot_blocks = re.findall(
                 r"@pyqtSlot.*?\n\s+def \w+.*?(?=\n\s+@|\nclass |\Z)",
@@ -815,7 +816,7 @@ class TestGateConditions:
         GATE: The asyncio voice pipeline bridge (_voice_pipeline in app/__init__.py)
         must not call any QWidget method directly.
         """
-        src = (_ROOT / "app" / "__init__.py").read_text()
+        src = (_SRC / "app" / "__init__.py").read_text()
         forbidden = ["overlay.", "tray.", "QWidget", "QLabel", "QMainWindow"]
         in_voice_pipeline = src[src.find("async def _voice_pipeline"):]
         for f in forbidden:

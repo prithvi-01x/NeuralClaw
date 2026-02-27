@@ -41,17 +41,17 @@ _real_structlog.get_logger = lambda *a, **kw: _MagicMock2()  # type: ignore
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── imports ───────────────────────────────────────────────────────────────────
-from agent.orchestrator import Orchestrator, TurnResult, TurnStatus
-from agent.session import Session
-from brain.llm_client import BaseLLMClient
-from brain.types import FinishReason, LLMConfig, LLMResponse, Message, TokenUsage
-from memory.memory_manager import ContextBundle, MemoryManager
-from memory.long_term import MemoryEntry
-from safety.safety_kernel import SafetyKernel
-from skills.base import SkillBase
-from skills.bus import SkillBus
-from skills.registry import SkillRegistry
-from skills.types import (
+from neuralclaw.agent.orchestrator import Orchestrator, TurnResult, TurnStatus
+from neuralclaw.agent.session import Session
+from neuralclaw.brain.llm_client import BaseLLMClient
+from neuralclaw.brain.types import FinishReason, LLMConfig, LLMResponse, Message, TokenUsage
+from neuralclaw.memory.memory_manager import ContextBundle, MemoryManager
+from neuralclaw.memory.long_term import MemoryEntry
+from neuralclaw.safety.safety_kernel import SafetyKernel
+from neuralclaw.skills.base import SkillBase
+from neuralclaw.skills.bus import SkillBus
+from neuralclaw.skills.registry import SkillRegistry
+from neuralclaw.skills.types import (
     ConfirmationRequest, RiskLevel, SafetyDecision, SafetyStatus,
     SkillCall, SkillManifest, SkillResult, TrustLevel,
 )
@@ -257,7 +257,7 @@ class TestContextBundlePipeline:
 
     @pytest.mark.asyncio
     async def test_memory_error_doesnt_fail_turn(self):
-        from exceptions import MemoryError as NeuralClawMemoryError
+        from neuralclaw.exceptions import MemoryError as NeuralClawMemoryError
         orc, session, llm, mm = _make_stack(["ok"])
         mm.build_memory_context = AsyncMock(side_effect=NeuralClawMemoryError("db down"))
         # Turn should complete even when memory is broken

@@ -1,0 +1,74 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# NeuralClaw — Docker Compose
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Usage:
+#   docker compose up neuralclaw-cli       # CLI interface
+#   docker compose up neuralclaw-telegram  # Telegram bot
+#   docker compose up neuralclaw-gateway   # WebSocket gateway
+#   docker compose up neuralclaw-webui     # Web UI
+#
+#   docker compose run neuralclaw-cli onboard   # Run setup wizard
+#
+# Secrets: copy .env.example → .env and fill in API keys before starting.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── CLI REPL ───────────────────────────────────────────────────────────────
+  neuralclaw-cli:
+    build: .
+    image: neuralclaw:latest
+    container_name: neuralclaw-cli
+    command: ["--interface", "cli"]
+    stdin_open: true
+    tty: true
+    env_file: .env
+    volumes:
+      - neuralclaw-data:/app/data
+      - ./config:/app/config:ro
+    restart: "no"
+
+  # ── Telegram Bot ───────────────────────────────────────────────────────────
+  neuralclaw-telegram:
+    build: .
+    image: neuralclaw:latest
+    container_name: neuralclaw-telegram
+    command: ["--interface", "telegram"]
+    env_file: .env
+    volumes:
+      - neuralclaw-data:/app/data
+      - ./src/neuralclaw/config:/app/src/neuralclaw/config:ro
+    restart: unless-stopped
+
+  # ── WebSocket Gateway ──────────────────────────────────────────────────────
+  neuralclaw-gateway:
+    build: .
+    image: neuralclaw:latest
+    container_name: neuralclaw-gateway
+    command: ["--interface", "gateway"]
+    env_file: .env
+    ports:
+      - "9090:9090"
+    volumes:
+      - neuralclaw-data:/app/data
+      - ./src/neuralclaw/config:/app/src/neuralclaw/config:ro
+    restart: unless-stopped
+
+  # ── Web UI ─────────────────────────────────────────────────────────────────
+  neuralclaw-webui:
+    build: .
+    image: neuralclaw:latest
+    container_name: neuralclaw-webui
+    command: ["--interface", "webui"]
+    env_file: .env
+    ports:
+      - "9090:9090"
+      - "8080:8080"
+    volumes:
+      - neuralclaw-data:/app/data
+      - ./src/neuralclaw/config:/app/src/neuralclaw/config:ro
+    restart: unless-stopped
+
+volumes:
+  neuralclaw-data:
+    driver: local

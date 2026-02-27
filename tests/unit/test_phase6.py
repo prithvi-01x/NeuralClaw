@@ -27,39 +27,39 @@ import pytest
 
 class TestTraceContext:
     def test_default_trace_id_has_prefix(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext()
         assert ctx.trace_id.startswith("trc_")
 
     def test_for_session_derives_from_session_id(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext.for_session("sess_abcdef12")
         assert ctx.trace_id == "trc_sess_abc"
 
     def test_for_session_no_id_generates_random(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext.for_session()
         assert ctx.trace_id.startswith("trc_")
 
     def test_turn_id_starts_as_none(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext()
         assert ctx.turn_id is None
 
     def test_new_turn_sets_turn_id(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext()
         ctx.new_turn()
         assert ctx.turn_id is not None
         assert ctx.turn_id.startswith("trn_")
 
     def test_new_turn_returns_self(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext()
         assert ctx.new_turn() is ctx
 
     def test_successive_turns_get_unique_ids(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext()
         ctx.new_turn()
         t1 = ctx.turn_id
@@ -68,14 +68,14 @@ class TestTraceContext:
         assert t1 != t2
 
     def test_clear_turn_removes_turn_id(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext()
         ctx.new_turn()
         ctx.clear_turn()
         assert ctx.turn_id is None
 
     def test_as_dict_includes_both_ids_when_turn_active(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext(trace_id="trc_test1234")
         ctx.new_turn()
         d = ctx.as_dict()
@@ -83,31 +83,31 @@ class TestTraceContext:
         assert "turn_id" in d and d["turn_id"].startswith("trn_")
 
     def test_as_dict_omits_turn_id_when_not_set(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext(trace_id="trc_test1234")
         d = ctx.as_dict()
         assert d == {"trace_id": "trc_test1234"}
 
     def test_bind_calls_structlog_with_both_ids(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext(trace_id="trc_abc")
         ctx.new_turn()
-        with patch("observability.trace._scv.bind_contextvars") as mock_bind:
+        with patch("neuralclaw.observability.trace._scv.bind_contextvars") as mock_bind:
             ctx.bind()
             kwargs = mock_bind.call_args.kwargs
             assert kwargs["trace_id"] == "trc_abc"
             assert "turn_id" in kwargs
 
     def test_bind_without_turn_omits_turn_id(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext(trace_id="trc_abc")
-        with patch("observability.trace._scv.bind_contextvars") as mock_bind:
+        with patch("neuralclaw.observability.trace._scv.bind_contextvars") as mock_bind:
             ctx.bind()
             kwargs = mock_bind.call_args.kwargs
             assert "turn_id" not in kwargs
 
     def test_clear_calls_unbind(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext()
         ctx.new_turn()
         with patch("structlog.contextvars.unbind_contextvars"):
@@ -115,7 +115,7 @@ class TestTraceContext:
             assert ctx.turn_id is None
 
     def test_repr_contains_ids(self):
-        from observability.trace import TraceContext
+        from neuralclaw.observability.trace import TraceContext
         ctx = TraceContext(trace_id="trc_testid")
         ctx.new_turn()
         r = repr(ctx)
@@ -129,7 +129,7 @@ class TestTraceContext:
 
 class TestErrorHierarchy:
     def test_all_exceptions_importable(self):
-        from exceptions import (
+        from neuralclaw.exceptions import (
             NeuralClawError,
             AgentError, PlanError, TurnTimeoutError, IterationLimitError,
             SkillError, SkillNotFoundError, SkillTimeoutError,
@@ -142,50 +142,50 @@ class TestErrorHierarchy:
         )  # just verify no ImportError
 
     def test_agent_errors_inherit_neuralclaw(self):
-        from exceptions import NeuralClawError, PlanError, TurnTimeoutError, IterationLimitError
+        from neuralclaw.exceptions import NeuralClawError, PlanError, TurnTimeoutError, IterationLimitError
         for cls in (PlanError, TurnTimeoutError, IterationLimitError):
             assert issubclass(cls, NeuralClawError), f"{cls} not subclass of NeuralClawError"
 
     def test_skill_errors_inherit_skill_error(self):
-        from exceptions import SkillError, SkillNotFoundError, SkillTimeoutError, SkillValidationError, SkillDisabledError
+        from neuralclaw.exceptions import SkillError, SkillNotFoundError, SkillTimeoutError, SkillValidationError, SkillDisabledError
         for cls in (SkillNotFoundError, SkillTimeoutError, SkillValidationError, SkillDisabledError):
             assert issubclass(cls, SkillError)
 
     def test_safety_errors_inherit_safety_error(self):
-        from exceptions import SafetyError, CapabilityDeniedError, CommandNotAllowedError, ConfirmationDeniedError
+        from neuralclaw.exceptions import SafetyError, CapabilityDeniedError, CommandNotAllowedError, ConfirmationDeniedError
         for cls in (CapabilityDeniedError, CommandNotAllowedError, ConfirmationDeniedError):
             assert issubclass(cls, SafetyError)
 
     def test_memory_errors_inherit_memory_error(self):
-        from exceptions import MemoryError, MemoryNotInitializedError, MemoryStoreError
+        from neuralclaw.exceptions import MemoryError, MemoryNotInitializedError, MemoryStoreError
         for cls in (MemoryNotInitializedError, MemoryStoreError):
             assert issubclass(cls, MemoryError)
 
     def test_llm_errors_re_exported(self):
-        from exceptions import LLMError, LLMConnectionError, LLMRateLimitError
+        from neuralclaw.exceptions import LLMError, LLMConnectionError, LLMRateLimitError
         assert issubclass(LLMConnectionError, LLMError)
         assert issubclass(LLMRateLimitError, LLMError)
 
     def test_capability_denied_carries_fields(self):
-        from exceptions import CapabilityDeniedError
+        from neuralclaw.exceptions import CapabilityDeniedError
         err = CapabilityDeniedError(skill="web_fetch", capability="net:fetch")
         assert err.skill == "web_fetch"
         assert err.capability == "net:fetch"
         assert "net:fetch" in str(err)
 
     def test_command_not_allowed_carries_command(self):
-        from exceptions import CommandNotAllowedError
+        from neuralclaw.exceptions import CommandNotAllowedError
         err = CommandNotAllowedError(command="rm -rf /")
         assert err.command == "rm -rf /"
         assert "rm -rf /" in str(err)
 
     def test_skill_errors_catchable_as_neuralclaw(self):
-        from exceptions import NeuralClawError, SkillTimeoutError
+        from neuralclaw.exceptions import NeuralClawError, SkillTimeoutError
         with pytest.raises(NeuralClawError):
             raise SkillTimeoutError("timed out")
 
     def test_custom_message_overrides_default_for_capability_denied(self):
-        from exceptions import CapabilityDeniedError
+        from neuralclaw.exceptions import CapabilityDeniedError
         err = CapabilityDeniedError(skill="s", capability="c", message="custom msg")
         assert str(err) == "custom msg"
 
@@ -201,7 +201,7 @@ class TestNoBareExceptInKernel:
                 if line.strip().startswith("except Exception")]
 
     def test_orchestrator_has_minimal_bare_except(self):
-        bad = self._bare_except_lines("agent/orchestrator.py")
+        bad = self._bare_except_lines("src/neuralclaw/agent/orchestrator.py")
         # Only the two _refresh_capabilities silent-pass probes are allowed
         assert len(bad) <= 2, (
             f"agent/orchestrator.py has {len(bad)} bare 'except Exception' at lines {bad}. "
@@ -209,11 +209,11 @@ class TestNoBareExceptInKernel:
         )
 
     def test_reflector_has_no_bare_except(self):
-        bad = self._bare_except_lines("agent/reflector.py")
+        bad = self._bare_except_lines("src/neuralclaw/agent/reflector.py")
         assert bad == [], f"agent/reflector.py has bare 'except Exception' at lines {bad}"
 
     def test_skills_bus_has_no_bare_except_in_dispatch(self):
-        bad = self._bare_except_lines("skills/bus.py")
+        bad = self._bare_except_lines("src/neuralclaw/skills/bus.py")
         # The import-time fallback at module top is the only one allowed
         assert len(bad) <= 1, (
             f"skills/bus.py has {len(bad)} bare 'except Exception' at lines {bad}. "
@@ -227,44 +227,44 @@ class TestNoBareExceptInKernel:
 
 class TestRetryPolicy:
     def test_default_max_attempts_is_3(self):
-        from skills.bus import RetryPolicy
+        from neuralclaw.skills.bus import RetryPolicy
         assert RetryPolicy().max_attempts == 3
 
     def test_skill_timeout_is_retryable(self):
-        from skills.bus import RetryPolicy
+        from neuralclaw.skills.bus import RetryPolicy
         assert RetryPolicy().is_retryable("SkillTimeoutError") is True
 
     def test_llm_rate_limit_is_retryable(self):
-        from skills.bus import RetryPolicy
+        from neuralclaw.skills.bus import RetryPolicy
         assert RetryPolicy().is_retryable("LLMRateLimitError") is True
 
     def test_value_error_is_not_retryable(self):
-        from skills.bus import RetryPolicy
+        from neuralclaw.skills.bus import RetryPolicy
         assert RetryPolicy().is_retryable("ValueError") is False
 
     def test_none_is_not_retryable(self):
-        from skills.bus import RetryPolicy
+        from neuralclaw.skills.bus import RetryPolicy
         assert RetryPolicy().is_retryable(None) is False
 
     def test_delay_increases_exponentially(self):
-        from skills.bus import RetryPolicy
+        from neuralclaw.skills.bus import RetryPolicy
         p = RetryPolicy(base_delay=1.0, max_delay=30.0, jitter=False)
         assert p.delay_for_attempt(1) < p.delay_for_attempt(2) < p.delay_for_attempt(3)
 
     def test_delay_capped_at_max(self):
-        from skills.bus import RetryPolicy
+        from neuralclaw.skills.bus import RetryPolicy
         p = RetryPolicy(base_delay=10.0, max_delay=15.0, jitter=False)
         assert p.delay_for_attempt(10) <= 15.0
 
     def test_jitter_stays_within_bounds(self):
-        from skills.bus import RetryPolicy
+        from neuralclaw.skills.bus import RetryPolicy
         p = RetryPolicy(base_delay=2.0, max_delay=30.0, jitter=True)
         for _ in range(30):
             d = p.delay_for_attempt(1)
             assert 1.6 <= d <= 2.4  # jitter is [80%, 120%] of base_delay
 
     def test_terminal_exec_override_is_max_1(self):
-        from skills.bus import _SKILL_RETRY_OVERRIDES
+        from neuralclaw.skills.bus import _SKILL_RETRY_OVERRIDES
         override = _SKILL_RETRY_OVERRIDES.get("terminal_exec")
         assert override is not None
         assert override.max_attempts == 1
@@ -290,7 +290,7 @@ def _make_skill(name="test_skill", enabled=True, timeout=5):
 
 
 def _make_call(name="test_skill"):
-    from skills.types import SkillCall
+    from neuralclaw.skills.types import SkillCall
     return SkillCall(id="call_001", skill_name=name, arguments={})
 
 
@@ -304,8 +304,8 @@ def _make_registry(name, skill):
 class TestSkillBusRetry:
     @pytest.mark.asyncio
     async def test_success_first_attempt_no_retry(self):
-        from skills.bus import SkillBus
-        from skills.types import SkillResult, TrustLevel
+        from neuralclaw.skills.bus import SkillBus
+        from neuralclaw.skills.types import SkillResult, TrustLevel
         skill = _make_skill()
         skill.execute = AsyncMock(return_value=SkillResult.ok("test_skill", "call_001", "done"))
         bus = SkillBus(_make_registry("test_skill", skill), safety_kernel=None)
@@ -316,8 +316,8 @@ class TestSkillBusRetry:
     @pytest.mark.asyncio
     async def test_success_on_second_attempt(self):
         """Timeout on first attempt, succeeds on second."""
-        from skills.bus import SkillBus, RetryPolicy, _SKILL_RETRY_OVERRIDES
-        from skills.types import SkillResult, TrustLevel
+        from neuralclaw.skills.bus import SkillBus, RetryPolicy, _SKILL_RETRY_OVERRIDES
+        from neuralclaw.skills.types import SkillResult, TrustLevel
         skill = _make_skill()
         calls = []
 
@@ -339,8 +339,8 @@ class TestSkillBusRetry:
     @pytest.mark.asyncio
     async def test_exhausts_retries_returns_failure(self):
         """Always times out — should exhaust max_attempts and return error."""
-        from skills.bus import SkillBus, RetryPolicy, _SKILL_RETRY_OVERRIDES
-        from skills.types import TrustLevel
+        from neuralclaw.skills.bus import SkillBus, RetryPolicy, _SKILL_RETRY_OVERRIDES
+        from neuralclaw.skills.types import TrustLevel
         skill = _make_skill()
         skill.execute = AsyncMock(side_effect=asyncio.TimeoutError())
         fast_policy = RetryPolicy(max_attempts=2, base_delay=0.001, jitter=False)
@@ -355,8 +355,8 @@ class TestSkillBusRetry:
     @pytest.mark.asyncio
     async def test_non_retryable_error_fails_immediately(self):
         """ValueError is not in retryable_errors — no retry, fail on first attempt."""
-        from skills.bus import SkillBus, RetryPolicy, _SKILL_RETRY_OVERRIDES
-        from skills.types import TrustLevel
+        from neuralclaw.skills.bus import SkillBus, RetryPolicy, _SKILL_RETRY_OVERRIDES
+        from neuralclaw.skills.types import TrustLevel
         skill = _make_skill()
         skill.execute = AsyncMock(side_effect=ValueError("bad input"))
         fast_policy = RetryPolicy(max_attempts=3, base_delay=0.001, jitter=False)
@@ -371,8 +371,8 @@ class TestSkillBusRetry:
     @pytest.mark.asyncio
     async def test_terminal_exec_never_retried(self):
         """terminal_exec has max_attempts=1 — must not retry even on timeout."""
-        from skills.bus import SkillBus
-        from skills.types import TrustLevel
+        from neuralclaw.skills.bus import SkillBus
+        from neuralclaw.skills.types import TrustLevel
         skill = _make_skill(name="terminal_exec")
         skill.execute = AsyncMock(side_effect=asyncio.TimeoutError())
         bus = SkillBus(_make_registry("terminal_exec", skill), safety_kernel=None)
@@ -382,8 +382,8 @@ class TestSkillBusRetry:
 
     @pytest.mark.asyncio
     async def test_skill_not_found_returns_error_result(self):
-        from skills.bus import SkillBus
-        from skills.types import TrustLevel
+        from neuralclaw.skills.bus import SkillBus
+        from neuralclaw.skills.types import TrustLevel
         r = MagicMock()
         r.get_or_none.return_value = None
         r.list_names.return_value = []
@@ -395,8 +395,8 @@ class TestSkillBusRetry:
     @pytest.mark.asyncio
     async def test_bus_never_raises_on_unexpected_error(self):
         """dispatch() must always return SkillResult — never raise."""
-        from skills.bus import SkillBus
-        from skills.types import TrustLevel
+        from neuralclaw.skills.bus import SkillBus
+        from neuralclaw.skills.types import TrustLevel
         skill = _make_skill()
         skill.execute = AsyncMock(side_effect=RuntimeError("kernel panic"))
         bus = SkillBus(_make_registry("test_skill", skill), safety_kernel=None)

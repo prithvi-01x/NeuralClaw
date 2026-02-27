@@ -36,7 +36,7 @@ def _clear_api_keys_from_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
     # Disable .env file loading by patching Settings.model_config
-    import config.settings as settings_module
+    import neuralclaw.config.settings as settings_module
     from pydantic_settings import SettingsConfigDict
     patched_config = SettingsConfigDict(
         env_file=None,

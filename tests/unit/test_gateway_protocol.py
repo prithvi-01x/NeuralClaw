@@ -9,7 +9,7 @@ import asyncio
 import json
 import pytest
 
-from gateway.protocol import (
+from neuralclaw.gateway.protocol import (
     GatewayMessage,
     MessageType,
     make_response,
@@ -19,8 +19,8 @@ from gateway.protocol import (
     make_session_created,
     make_session_updated,
 )
-from gateway.session_store import SessionStore
-from skills.types import TrustLevel
+from neuralclaw.gateway.session_store import SessionStore
+from neuralclaw.skills.types import TrustLevel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,7 +221,7 @@ class TestSessionStore:
 
 class TestGatewayConfig:
     def test_default_settings(self):
-        from config.settings import GatewayConfig
+        from neuralclaw.config.settings import GatewayConfig
         cfg = GatewayConfig()
         assert cfg.host == "127.0.0.1"
         assert cfg.port == 9090
@@ -229,12 +229,12 @@ class TestGatewayConfig:
         assert cfg.max_connections == 10
 
     def test_invalid_port(self):
-        from config.settings import GatewayConfig
+        from neuralclaw.config.settings import GatewayConfig
         with pytest.raises(ValueError, match="gateway.port"):
             GatewayConfig(port=99999)
 
     def test_custom_values(self):
-        from config.settings import GatewayConfig
+        from neuralclaw.config.settings import GatewayConfig
         cfg = GatewayConfig(host="0.0.0.0", port=8080, auth_token="secret")
         assert cfg.host == "0.0.0.0"
         assert cfg.port == 8080

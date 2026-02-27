@@ -12,17 +12,17 @@ from __future__ import annotations
 
 import pytest
 
-from safety.safety_kernel import SafetyKernel
-from safety.whitelist import check_command, check_path
-from safety.risk_scorer import score_tool_call
-from skills.types import (
+from neuralclaw.safety.safety_kernel import SafetyKernel
+from neuralclaw.safety.whitelist import check_command, check_path
+from neuralclaw.safety.risk_scorer import score_tool_call
+from neuralclaw.skills.types import (
     RiskLevel,
     SafetyStatus,
     SkillCall,
     SkillManifest,
     TrustLevel,
 )
-from safety.risk_scorer import score_tool_call
+from neuralclaw.safety.risk_scorer import score_tool_call
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -391,6 +391,6 @@ class TestRiskLevelComparison:
         assert not (RiskLevel.LOW >= RiskLevel.MEDIUM)
 
     def test_max_risk(self):
-        from safety.risk_scorer import _max_risk
+        from neuralclaw.safety.risk_scorer import _max_risk
         assert _max_risk(RiskLevel.LOW, RiskLevel.HIGH) == RiskLevel.HIGH
         assert _max_risk(RiskLevel.CRITICAL, RiskLevel.LOW) == RiskLevel.CRITICAL

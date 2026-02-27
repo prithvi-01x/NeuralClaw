@@ -16,9 +16,9 @@ from io import StringIO
 
 import pytest
 
-from agent.response_synthesizer import AgentResponse, ResponseKind
-from agent.orchestrator import TurnResult, TurnStatus
-from skills.types import RiskLevel, SafetyDecision, SafetyStatus, TrustLevel
+from neuralclaw.agent.response_synthesizer import AgentResponse, ResponseKind
+from neuralclaw.agent.orchestrator import TurnResult, TurnStatus
+from neuralclaw.skills.types import RiskLevel, SafetyDecision, SafetyStatus, TrustLevel
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ def make_settings(
 
 @pytest.fixture
 def mock_session():
-    from agent.session import Session
+    from neuralclaw.agent.session import Session
     session = Session.create(user_id="test_user", trust_level=TrustLevel.LOW)
     return session
 
@@ -95,7 +95,7 @@ def mock_memory():
 def cli(mock_session, mock_orchestrator, mock_memory):
     """Create a pre-wired CLIInterface bypassing _init_components."""
     from rich.console import Console
-    from interfaces.cli import CLIInterface
+    from neuralclaw.interfaces.cli import CLIInterface
     settings = make_settings()
     cli = CLIInterface(settings=settings)
     cli._session = mock_session
@@ -257,14 +257,14 @@ class TestCmdTrust:
     @pytest.mark.asyncio
     async def test_high_trust_requires_confirmation(self, cli, mock_session):
         cli._session = mock_session
-        with patch("interfaces.cli.Confirm.ask", return_value=True):
+        with patch("neuralclaw.interfaces.cli.Confirm.ask", return_value=True):
             await cli._cmd_trust("high")
         assert cli._session.trust_level == TrustLevel.HIGH
 
     @pytest.mark.asyncio
     async def test_high_trust_denied_keeps_level(self, cli, mock_session):
         cli._session = mock_session
-        with patch("interfaces.cli.Confirm.ask", return_value=False):
+        with patch("neuralclaw.interfaces.cli.Confirm.ask", return_value=False):
             await cli._cmd_trust("high")
         assert cli._session.trust_level == TrustLevel.LOW
 
@@ -292,7 +292,7 @@ class TestCmdMemory:
 
     @pytest.mark.asyncio
     async def test_results_rendered_as_table(self, cli, mock_memory):
-        from memory.long_term import MemoryEntry
+        from neuralclaw.memory.long_term import MemoryEntry
         mock_memory.search_all.return_value = {
             "knowledge": [
                 MemoryEntry(
@@ -313,7 +313,7 @@ class TestCmdMemory:
 
 class TestCmdClear:
     def test_clears_session_conversation(self, cli, mock_session):
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         mock_session.add_user_message("Hello")
         mock_session.add_assistant_message("Hi!")
         cli._cmd_clear()
@@ -355,7 +355,7 @@ class TestCmdStatus:
 
 class TestCmdTools:
     def test_renders_table(self, cli):
-        from skills.types import SkillManifest
+        from neuralclaw.skills.types import SkillManifest
         fake_manifest = SkillManifest(
             name="test_skill",
             version="1.0.0",
@@ -378,7 +378,7 @@ class TestCmdTools:
         assert "No tools" in call_args
 
     def test_skill_detail(self, cli):
-        from skills.types import SkillManifest
+        from neuralclaw.skills.types import SkillManifest
         fake_manifest = SkillManifest(
             name="file_read",
             version="1.0.0",
@@ -452,7 +452,7 @@ class TestHandleConfirmation:
             text="Allow dangerous action?",
             tool_call_id="call_abc",
         )
-        with patch("interfaces.cli.Confirm.ask", return_value=True):
+        with patch("neuralclaw.interfaces.cli.Confirm.ask", return_value=True):
             cli._handle_confirmation(r)
         # Future should be resolved (won't raise if done)
         fut = mock_session._pending_confirmations.get("call_abc")
@@ -466,14 +466,14 @@ class TestHandleConfirmation:
             text="Allow dangerous action?",
             tool_call_id="call_xyz",
         )
-        with patch("interfaces.cli.Confirm.ask", return_value=False):
+        with patch("neuralclaw.interfaces.cli.Confirm.ask", return_value=False):
             cli._handle_confirmation(r)
         fut = mock_session._pending_confirmations.get("call_xyz")
         assert fut is None  # resolved and popped
 
     def test_no_tool_call_id_no_crash(self, cli):
         r = make_response(kind=ResponseKind.CONFIRMATION, text="Confirm?", tool_call_id="")
-        with patch("interfaces.cli.Confirm.ask", return_value=True):
+        with patch("neuralclaw.interfaces.cli.Confirm.ask", return_value=True):
             cli._handle_confirmation(r)  # should not raise
 
 

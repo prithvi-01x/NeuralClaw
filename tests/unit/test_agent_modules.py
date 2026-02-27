@@ -40,7 +40,7 @@ def _mock_session(
     active_plan=None,
     history=None,
 ):
-    from skills.types import TrustLevel
+    from neuralclaw.skills.types import TrustLevel
     session = MagicMock()
     session.id = "sess-test"
     session.trust_level = TrustLevel.LOW
@@ -61,7 +61,7 @@ def _mock_memory_manager(context: str = "") -> AsyncMock:
 
 class TestContextBuilderSystemPrompt:
     def _make_builder(self):
-        from agent.context_builder import ContextBuilder
+        from neuralclaw.agent.context_builder import ContextBuilder
         return ContextBuilder(_mock_memory_manager(), agent_name="TestAgent")
 
     def test_agent_name_in_prompt(self):
@@ -89,7 +89,7 @@ class TestContextBuilderSystemPrompt:
         assert "Active Plan" not in prompt
 
     def test_plan_block_included_when_plan_present(self):
-        from agent.session import ActivePlan, PlanStep
+        from neuralclaw.agent.session import ActivePlan, PlanStep
         step = PlanStep(index=0, description="Do something")
         plan = ActivePlan(id="plan1", goal="My Goal", steps=[step])
         session = _mock_session(active_plan=plan)
@@ -99,7 +99,7 @@ class TestContextBuilderSystemPrompt:
         assert "Do something" in prompt
 
     def test_completed_step_shows_checkmark(self):
-        from agent.session import ActivePlan, PlanStep
+        from neuralclaw.agent.session import ActivePlan, PlanStep
         step = PlanStep(index=0, description="Done step", completed=True)
         plan = ActivePlan(id="plan1", goal="Goal", steps=[step], current_step_index=1)
         session = _mock_session(active_plan=plan)
@@ -108,7 +108,7 @@ class TestContextBuilderSystemPrompt:
         assert "✅" in prompt
 
     def test_current_step_shows_arrow(self):
-        from agent.session import ActivePlan, PlanStep
+        from neuralclaw.agent.session import ActivePlan, PlanStep
         step = PlanStep(index=0, description="Current step")
         plan = ActivePlan(id="plan1", goal="Goal", steps=[step], current_step_index=0)
         session = _mock_session(active_plan=plan)
@@ -117,7 +117,7 @@ class TestContextBuilderSystemPrompt:
         assert "▶️" in prompt
 
     def test_step_with_result_summary(self):
-        from agent.session import ActivePlan, PlanStep
+        from neuralclaw.agent.session import ActivePlan, PlanStep
         step = PlanStep(index=0, description="Step", completed=True, result_summary="Done OK")
         plan = ActivePlan(id="plan1", goal="Goal", steps=[step], current_step_index=1)
         session = _mock_session(active_plan=plan)
@@ -126,7 +126,7 @@ class TestContextBuilderSystemPrompt:
         assert "Done OK" in prompt
 
     def test_step_with_error(self):
-        from agent.session import ActivePlan, PlanStep
+        from neuralclaw.agent.session import ActivePlan, PlanStep
         step = PlanStep(index=0, description="Step", error="Something failed")
         plan = ActivePlan(id="plan1", goal="Goal", steps=[step])
         session = _mock_session(active_plan=plan)
@@ -138,14 +138,14 @@ class TestContextBuilderSystemPrompt:
 class TestContextBuilderMemoryBlock:
     @pytest.mark.asyncio
     async def test_no_context_returns_empty(self):
-        from agent.context_builder import ContextBuilder
+        from neuralclaw.agent.context_builder import ContextBuilder
         cb = ContextBuilder(_mock_memory_manager(context=""), agent_name="Agent")
         result = await cb._build_memory_block("query", "sess-1")
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_context_wrapped_in_tags(self):
-        from agent.context_builder import ContextBuilder
+        from neuralclaw.agent.context_builder import ContextBuilder
         cb = ContextBuilder(_mock_memory_manager(context="some memory"), agent_name="Agent")
         result = await cb._build_memory_block("query", "sess-1")
         assert "<long_term_memory>" in result
@@ -153,7 +153,7 @@ class TestContextBuilderMemoryBlock:
 
     @pytest.mark.asyncio
     async def test_long_context_truncated(self):
-        from agent.context_builder import ContextBuilder
+        from neuralclaw.agent.context_builder import ContextBuilder
         long_ctx = "x" * 10_000
         cb = ContextBuilder(_mock_memory_manager(context=long_ctx), agent_name="Agent")
         result = await cb._build_memory_block("query", "sess-1")
@@ -161,8 +161,8 @@ class TestContextBuilderMemoryBlock:
 
     @pytest.mark.asyncio
     async def test_memory_exception_returns_empty(self):
-        from agent.context_builder import ContextBuilder
-        from exceptions import MemoryError as NeuralClawMemoryError
+        from neuralclaw.agent.context_builder import ContextBuilder
+        from neuralclaw.exceptions import MemoryError as NeuralClawMemoryError
         mm = AsyncMock()
         mm.build_memory_context = AsyncMock(side_effect=NeuralClawMemoryError("DB down"))
         cb = ContextBuilder(mm, agent_name="Agent")
@@ -172,11 +172,11 @@ class TestContextBuilderMemoryBlock:
 
 class TestContextBuilderTrimHistory:
     def _make_message(self, content: str):
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         return Message.user(content)
 
     def _make_builder(self):
-        from agent.context_builder import ContextBuilder
+        from neuralclaw.agent.context_builder import ContextBuilder
         return ContextBuilder(_mock_memory_manager())
 
     def test_empty_history_returns_empty(self):
@@ -208,7 +208,7 @@ class TestContextBuilderTrimHistory:
 class TestContextBuilderBuild:
     @pytest.mark.asyncio
     async def test_build_returns_messages(self):
-        from agent.context_builder import ContextBuilder
+        from neuralclaw.agent.context_builder import ContextBuilder
         cb = ContextBuilder(_mock_memory_manager(), agent_name="Agent")
         session = _mock_session()
         msgs = await cb.build(session, "hello")
@@ -216,8 +216,8 @@ class TestContextBuilderBuild:
 
     @pytest.mark.asyncio
     async def test_user_message_not_duplicated_if_in_history(self):
-        from agent.context_builder import ContextBuilder
-        from brain.types import Message
+        from neuralclaw.agent.context_builder import ContextBuilder
+        from neuralclaw.brain.types import Message
         cb = ContextBuilder(_mock_memory_manager(), agent_name="Agent")
         history = [Message.user("hello")]
         session = _mock_session(history=history)
@@ -227,8 +227,8 @@ class TestContextBuilderBuild:
 
     @pytest.mark.asyncio
     async def test_memory_block_included_when_non_empty(self):
-        from agent.context_builder import ContextBuilder
-        from brain.types import Role
+        from neuralclaw.agent.context_builder import ContextBuilder
+        from neuralclaw.brain.types import Role
         cb = ContextBuilder(_mock_memory_manager(context="important memory"), agent_name="Agent")
         session = _mock_session()
         msgs = await cb.build(session, "tell me")
@@ -242,16 +242,16 @@ class TestContextBuilderBuild:
 
 class TestPlannerParsePlan:
     def _make_planner(self, response_content: str = "{}"):
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         llm = _make_llm(response_content)
         config = LLMConfig(model="test")
         return Planner(llm, config)
 
     def test_valid_json_plan(self):
         import json
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         payload = json.dumps({
             "steps": ["Step one", "Step two"],
             "estimated_duration": "1 minute",
@@ -264,16 +264,16 @@ class TestPlannerParsePlan:
         assert result.estimated_duration == "1 minute"
 
     def test_fallback_on_invalid_json(self):
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         p = self._make_planner()
         result = p._parse_plan("not json at all\nStep A\nStep B")
         assert len(result.steps) >= 1
 
     def test_empty_steps_falls_back_to_lines(self):
         import json
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         payload = json.dumps({"steps": []})
         p = self._make_planner()
         result = p._parse_plan(payload)
@@ -282,21 +282,21 @@ class TestPlannerParsePlan:
 
     def test_strips_markdown_fences(self):
         import json
-        from agent.planner import Planner
+        from neuralclaw.agent.planner import Planner
         payload = "```json\n" + json.dumps({"steps": ["Do it"]}) + "\n```"
         p = self._make_planner()
         result = p._parse_plan(payload)
         assert "Do it" in result.steps
 
     def test_strips_numbered_prefixes(self):
-        from agent.planner import Planner
+        from neuralclaw.agent.planner import Planner
         p = self._make_planner()
         result = p._parse_plan("1. First step\n2. Second step")
         assert all(not s[0].isdigit() for s in result.steps)
 
     def test_risk_level_uppercased(self):
         import json
-        from agent.planner import Planner
+        from neuralclaw.agent.planner import Planner
         payload = json.dumps({"steps": ["s"], "risk_level": "medium"})
         p = self._make_planner()
         result = p._parse_plan(payload)
@@ -305,8 +305,8 @@ class TestPlannerParsePlan:
 
 class TestPlannerParseRecovery:
     def _make_planner(self):
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         return Planner(_make_llm(), LLMConfig(model="test"))
 
     def test_valid_recovery(self):
@@ -339,8 +339,8 @@ class TestPlannerCreatePlan:
     @pytest.mark.asyncio
     async def test_returns_plan_result(self):
         import json
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         payload = json.dumps({"steps": ["A", "B"], "risk_level": "LOW"})
         p = Planner(_make_llm(payload), LLMConfig(model="test"))
         result = await p.create_plan("Do X", ["web_search", "terminal"])
@@ -348,8 +348,8 @@ class TestPlannerCreatePlan:
 
     @pytest.mark.asyncio
     async def test_llm_failure_returns_fallback(self):
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         llm = AsyncMock()
         llm.generate = AsyncMock(side_effect=RuntimeError("LLM down"))
         p = Planner(llm, LLMConfig(model="test"))
@@ -360,8 +360,8 @@ class TestPlannerCreatePlan:
     @pytest.mark.asyncio
     async def test_context_appended_to_user_message(self):
         import json
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         payload = json.dumps({"steps": ["step"], "risk_level": "LOW"})
         llm = _make_llm(payload)
         p = Planner(llm, LLMConfig(model="test"))
@@ -376,8 +376,8 @@ class TestPlannerCreateRecovery:
     @pytest.mark.asyncio
     async def test_returns_recovery_result(self):
         import json
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         payload = json.dumps({"recovery_steps": ["Retry"], "can_recover": True})
         p = Planner(_make_llm(payload), LLMConfig(model="test"))
         result = await p.create_recovery("Goal", "failed step", "error msg", [])
@@ -385,8 +385,8 @@ class TestPlannerCreateRecovery:
 
     @pytest.mark.asyncio
     async def test_llm_failure_returns_no_recovery(self):
-        from agent.planner import Planner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.planner import Planner
+        from neuralclaw.brain.types import LLMConfig
         llm = AsyncMock()
         llm.generate = AsyncMock(side_effect=RuntimeError("boom"))
         p = Planner(llm, LLMConfig(model="test"))
@@ -400,8 +400,8 @@ class TestPlannerCreateRecovery:
 
 class TestReasonerParseVerdict:
     def _make_reasoner(self):
-        from agent.reasoner import Reasoner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.reasoner import Reasoner
+        from neuralclaw.brain.types import LLMConfig
         return Reasoner(_make_llm(), LLMConfig(model="test"))
 
     def test_valid_verdict_proceed_true(self):
@@ -435,7 +435,7 @@ class TestReasonerParseVerdict:
         assert v.proceed is True
 
     def test_is_confident_threshold(self):
-        from agent.reasoner import EvalVerdict
+        from neuralclaw.agent.reasoner import EvalVerdict
         v_confident = EvalVerdict(proceed=True, confidence=0.7, reasoning="ok")
         v_not = EvalVerdict(proceed=True, confidence=0.69, reasoning="ok")
         assert v_confident.is_confident is True
@@ -446,8 +446,8 @@ class TestReasonerEvaluateToolCall:
     @pytest.mark.asyncio
     async def test_returns_verdict(self):
         import json
-        from agent.reasoner import Reasoner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.reasoner import Reasoner
+        from neuralclaw.brain.types import LLMConfig
         payload = json.dumps({"proceed": True, "confidence": 0.9, "reasoning": "fine"})
         r = Reasoner(_make_llm(payload), LLMConfig(model="test"))
         v = await r.evaluate_tool_call("web_search", {"query": "test"}, "Find something")
@@ -455,9 +455,9 @@ class TestReasonerEvaluateToolCall:
 
     @pytest.mark.asyncio
     async def test_llm_failure_defaults_to_proceed(self):
-        from agent.reasoner import Reasoner
-        from brain.types import LLMConfig
-        from brain.llm_client import LLMError
+        from neuralclaw.agent.reasoner import Reasoner
+        from neuralclaw.brain.types import LLMConfig
+        from neuralclaw.brain.llm_client import LLMError
         llm = AsyncMock()
         llm.generate = AsyncMock(side_effect=LLMError("oops"))
         r = Reasoner(llm, LLMConfig(model="test"))
@@ -469,16 +469,16 @@ class TestReasonerEvaluateToolCall:
 class TestReasonerThink:
     @pytest.mark.asyncio
     async def test_returns_string(self):
-        from agent.reasoner import Reasoner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.reasoner import Reasoner
+        from neuralclaw.brain.types import LLMConfig
         r = Reasoner(_make_llm("Some reasoning here"), LLMConfig(model="test"))
         result = await r.think("Should I do X?")
         assert result == "Some reasoning here"
 
     @pytest.mark.asyncio
     async def test_with_context(self):
-        from agent.reasoner import Reasoner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.reasoner import Reasoner
+        from neuralclaw.brain.types import LLMConfig
         llm = _make_llm("reasoning")
         r = Reasoner(llm, LLMConfig(model="test"))
         await r.think("question", context="some context")
@@ -489,9 +489,9 @@ class TestReasonerThink:
 
     @pytest.mark.asyncio
     async def test_llm_failure_returns_empty(self):
-        from agent.reasoner import Reasoner
-        from brain.types import LLMConfig
-        from brain.llm_client import LLMError
+        from neuralclaw.agent.reasoner import Reasoner
+        from neuralclaw.brain.types import LLMConfig
+        from neuralclaw.brain.llm_client import LLMError
         llm = AsyncMock()
         llm.generate = AsyncMock(side_effect=LLMError("fail"))
         r = Reasoner(llm, LLMConfig(model="test"))
@@ -502,17 +502,17 @@ class TestReasonerThink:
 class TestReasonerReflect:
     @pytest.mark.asyncio
     async def test_returns_lesson(self):
-        from agent.reasoner import Reasoner
-        from brain.types import LLMConfig
+        from neuralclaw.agent.reasoner import Reasoner
+        from neuralclaw.brain.types import LLMConfig
         r = Reasoner(_make_llm("Lesson learned."), LLMConfig(model="test"))
         result = await r.reflect("Goal", ["step1", "step2"], "success")
         assert result == "Lesson learned."
 
     @pytest.mark.asyncio
     async def test_llm_failure_returns_empty(self):
-        from agent.reasoner import Reasoner
-        from brain.types import LLMConfig
-        from brain.llm_client import LLMError
+        from neuralclaw.agent.reasoner import Reasoner
+        from neuralclaw.brain.types import LLMConfig
+        from neuralclaw.brain.llm_client import LLMError
         llm = AsyncMock()
         llm.generate = AsyncMock(side_effect=LLMError("fail"))
         r = Reasoner(llm, LLMConfig(model="test"))
@@ -526,11 +526,11 @@ class TestReasonerReflect:
 
 class TestResponseSynthesizerFromLLM:
     def _make_synth(self):
-        from agent.response_synthesizer import ResponseSynthesizer
+        from neuralclaw.agent.response_synthesizer import ResponseSynthesizer
         return ResponseSynthesizer()
 
     def test_text_kind(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         resp = s.from_llm(_mock_llm_response("Hello!"))
         assert resp.kind == ResponseKind.TEXT
@@ -552,11 +552,11 @@ class TestResponseSynthesizerFromLLM:
 
 class TestResponseSynthesizerToolResults:
     def _make_synth(self):
-        from agent.response_synthesizer import ResponseSynthesizer
+        from neuralclaw.agent.response_synthesizer import ResponseSynthesizer
         return ResponseSynthesizer()
 
     def _make_tool_result(self, name: str, content: str, success: bool = True):
-        from skills.types import SkillResult, RiskLevel
+        from neuralclaw.skills.types import SkillResult, RiskLevel
         return SkillResult.ok(
             skill_name=name,
             skill_call_id="call-1",
@@ -565,7 +565,7 @@ class TestResponseSynthesizerToolResults:
         )
 
     def test_tool_success(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         result = self._make_tool_result("web_search", "some results")
         resp = s.tool_success(result)
@@ -580,7 +580,7 @@ class TestResponseSynthesizerToolResults:
         assert "Found 5 results" in resp.text
 
     def test_tool_error(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         result = self._make_tool_result("terminal", "error output")
         resp = s.tool_error(result)
@@ -589,7 +589,7 @@ class TestResponseSynthesizerToolResults:
         assert "terminal" in resp.text
 
     def test_tool_progress(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         resp = s.tool_progress("terminal", step=3, total=10, detail="running")
         assert resp.kind == ResponseKind.PROGRESS
@@ -604,11 +604,11 @@ class TestResponseSynthesizerToolResults:
 
 class TestResponseSynthesizerConfirmation:
     def _make_synth(self):
-        from agent.response_synthesizer import ResponseSynthesizer
+        from neuralclaw.agent.response_synthesizer import ResponseSynthesizer
         return ResponseSynthesizer()
 
     def _make_confirmation_request(self, risk_level_str: str = "HIGH", arguments: dict = None):
-        from skills.types import ConfirmationRequest, RiskLevel
+        from neuralclaw.skills.types import ConfirmationRequest, RiskLevel
         return ConfirmationRequest(
             skill_name="terminal",
             skill_call_id="call-123",
@@ -618,7 +618,7 @@ class TestResponseSynthesizerConfirmation:
         )
 
     def test_confirmation_kind(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         cr = self._make_confirmation_request(arguments={"cmd": "rm -rf /"})
         resp = s.confirmation_request(cr)
@@ -654,11 +654,11 @@ class TestResponseSynthesizerConfirmation:
 
 class TestResponseSynthesizerPlanAndStatus:
     def _make_synth(self):
-        from agent.response_synthesizer import ResponseSynthesizer
+        from neuralclaw.agent.response_synthesizer import ResponseSynthesizer
         return ResponseSynthesizer()
 
     def test_plan_preview(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         resp = s.plan_preview("My Goal", ["Step 1", "Step 2"])
         assert resp.kind == ResponseKind.PLAN
@@ -667,7 +667,7 @@ class TestResponseSynthesizerPlanAndStatus:
         assert resp.is_final is False
 
     def test_error_response(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         resp = s.error("Something went wrong", detail="traceback here")
         assert resp.kind == ResponseKind.ERROR
@@ -685,13 +685,13 @@ class TestResponseSynthesizerPlanAndStatus:
         assert "cancelled" in resp.text.lower() or "🛑" in resp.text
 
     def test_thinking(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         resp = s.thinking()
         assert resp.is_final is False
 
     def test_info(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         resp = s.info("Just a heads up")
         assert "Just a heads up" in resp.text
@@ -714,7 +714,7 @@ class TestResponseSynthesizerPlanAndStatus:
         assert len(bar) == 10
 
     def test_status_response(self):
-        from agent.response_synthesizer import ResponseKind
+        from neuralclaw.agent.response_synthesizer import ResponseKind
         s = self._make_synth()
         session = MagicMock()
         session.active_plan = None
@@ -753,6 +753,6 @@ class TestResponseSynthesizerPlanAndStatus:
 
 class TestAgentResponseStr:
     def test_str_returns_text(self):
-        from agent.response_synthesizer import AgentResponse, ResponseKind
+        from neuralclaw.agent.response_synthesizer import AgentResponse, ResponseKind
         r = AgentResponse(kind=ResponseKind.TEXT, text="hello world")
         assert str(r) == "hello world"

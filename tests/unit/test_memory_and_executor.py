@@ -21,19 +21,19 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 class TestConversationBuffer:
     def _make_buf(self, max_turns: int = 5):
-        from memory.short_term import ConversationBuffer
+        from neuralclaw.memory.short_term import ConversationBuffer
         return ConversationBuffer(max_turns=max_turns)
 
     def _user(self, text: str):
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         return Message.user(text)
 
     def _assistant(self, text: str):
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         return Message.assistant(text)
 
     def _system(self, text: str):
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         return Message.system(text)
 
     def test_add_user_increments_turn_count(self):
@@ -81,7 +81,7 @@ class TestConversationBuffer:
         buf.add(self._user("user 2"))
         buf.add(self._assistant("reply 2"))
         buf.add(self._user("user 3"))
-        from brain.types import Role
+        from neuralclaw.brain.types import Role
         assert buf._messages[0].role == Role.USER
 
     def test_get_recent_returns_last_n(self):
@@ -166,11 +166,11 @@ class TestConversationBuffer:
 
 class TestToolResultCache:
     def _make_cache(self, max_results: int = 5):
-        from memory.short_term import ToolResultCache
+        from neuralclaw.memory.short_term import ToolResultCache
         return ToolResultCache(max_results=max_results)
 
     def _entry(self, tool_call_id: str, name: str = "tool", content: str = "ok"):
-        from memory.short_term import ToolResultEntry
+        from neuralclaw.memory.short_term import ToolResultEntry
         return ToolResultEntry(tool_call_id=tool_call_id, tool_name=name, content=content)
 
     def test_add_and_get_recent(self):
@@ -216,18 +216,18 @@ class TestToolResultCache:
 
 class TestShortTermMemory:
     def _make_stm(self, session_id: str = "sess-1"):
-        from memory.short_term import ShortTermMemory
+        from neuralclaw.memory.short_term import ShortTermMemory
         return ShortTermMemory(session_id=session_id, user_id="user1", max_turns=10)
 
     def test_add_user_message_increments_state_turn_count(self):
         stm = self._make_stm()
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         stm.add_message(Message.user("hello"))
         assert stm.state.turn_count == 1
 
     def test_add_assistant_message_no_turn_increment(self):
         stm = self._make_stm()
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         stm.add_message(Message.assistant("hi"))
         assert stm.state.turn_count == 0
 
@@ -244,14 +244,14 @@ class TestShortTermMemory:
 
     def test_get_context_messages_with_system_prompt(self):
         stm = self._make_stm()
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         stm.add_message(Message.user("hello"))
         msgs = stm.get_context_messages(system_prompt="You are helpful")
         assert any("helpful" in (m.content or "") for m in msgs)
 
     def test_clear_conversation(self):
         stm = self._make_stm()
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         stm.add_message(Message.user("hello"))
         stm.clear_conversation()
         assert stm.conversation.message_count == 0
@@ -264,7 +264,7 @@ class TestShortTermMemory:
     @pytest.mark.asyncio
     async def test_compact_raises_when_not_enough_turns(self):
         stm = self._make_stm()
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         stm.add_message(Message.user("only one"))
         with pytest.raises(RuntimeError, match="Nothing to compact"):
             await stm.compact(AsyncMock(), MagicMock(), keep_recent=4)
@@ -272,7 +272,7 @@ class TestShortTermMemory:
     @pytest.mark.asyncio
     async def test_compact_calls_llm_and_applies_summary(self):
         stm = self._make_stm()
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         for i in range(6):
             stm.add_message(Message.user(f"msg {i}"))
             stm.add_message(Message.assistant(f"reply {i}"))
@@ -291,7 +291,7 @@ class TestShortTermMemory:
     @pytest.mark.asyncio
     async def test_compact_raises_on_empty_llm_response(self):
         stm = self._make_stm()
-        from brain.types import Message
+        from neuralclaw.brain.types import Message
         for i in range(6):
             stm.add_message(Message.user(f"msg {i}"))
 
@@ -312,27 +312,27 @@ class TestShortTermMemory:
 
 class TestMemoryEntry:
     def test_relevance_score_from_distance(self):
-        from memory.long_term import MemoryEntry
+        from neuralclaw.memory.long_term import MemoryEntry
         entry = MemoryEntry(id="1", text="hello", collection="knowledge", distance=0.0)
         assert entry.relevance_score == 1.0
 
     def test_relevance_score_max_distance(self):
-        from memory.long_term import MemoryEntry
+        from neuralclaw.memory.long_term import MemoryEntry
         entry = MemoryEntry(id="1", text="hello", collection="knowledge", distance=2.0)
         assert entry.relevance_score == 0.0
 
     def test_relevance_score_mid_distance(self):
-        from memory.long_term import MemoryEntry
+        from neuralclaw.memory.long_term import MemoryEntry
         entry = MemoryEntry(id="1", text="hello", collection="knowledge", distance=1.0)
         assert entry.relevance_score == 0.5
 
     def test_relevance_score_clamped_at_zero(self):
-        from memory.long_term import MemoryEntry
+        from neuralclaw.memory.long_term import MemoryEntry
         entry = MemoryEntry(id="1", text="hello", collection="knowledge", distance=3.0)
         assert entry.relevance_score == 0.0
 
     def test_no_distance_gives_zero_relevance(self):
-        from memory.long_term import MemoryEntry
+        from neuralclaw.memory.long_term import MemoryEntry
         entry = MemoryEntry(id="1", text="hello", collection="knowledge")
         assert entry.relevance_score == 0.0
 
@@ -342,7 +342,7 @@ class TestMemoryEntry:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_lt_memory(relevance_threshold: float = 0.5):
-    from memory.long_term import LongTermMemory
+    from neuralclaw.memory.long_term import LongTermMemory
     embedder = AsyncMock()
     embedder.embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
     lt = LongTermMemory(persist_dir="/tmp/test_chroma", embedder=embedder, relevance_threshold=relevance_threshold)
@@ -490,8 +490,8 @@ class TestLongTermMemory:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_memory_manager():
-    from memory.memory_manager import MemoryManager
-    from memory.task import TaskMemoryStore
+    from neuralclaw.memory.memory_manager import MemoryManager
+    from neuralclaw.memory.task import TaskMemoryStore
     mm = MemoryManager.__new__(MemoryManager)
     mm._initialized = True
     mm._relevance_threshold = 0.55
@@ -521,7 +521,7 @@ class TestMemoryManagerInit:
     async def test_requires_init_raises_when_not_initialized(self):
         mm = _make_memory_manager()
         mm._initialized = False
-        from exceptions import MemoryError as MemorySubsystemError
+        from neuralclaw.exceptions import MemoryError as MemorySubsystemError
         with pytest.raises(MemorySubsystemError, match="not initialized"):
             mm._require_init()
 
@@ -588,7 +588,7 @@ class TestMemoryManagerOperations:
 
     @pytest.mark.asyncio
     async def test_build_memory_context_returns_formatted_block(self):
-        from memory.long_term import MemoryEntry
+        from neuralclaw.memory.long_term import MemoryEntry
         mm = _make_memory_manager()
         entry = MemoryEntry(id="1", text="important fact", collection="knowledge", distance=0.1)
         mm.long_term.search = AsyncMock(return_value=[entry])
@@ -597,7 +597,7 @@ class TestMemoryManagerOperations:
 
     @pytest.mark.asyncio
     async def test_search_all_skips_failed_collections(self):
-        from memory.long_term import COLLECTIONS
+        from neuralclaw.memory.long_term import COLLECTIONS
         mm = _make_memory_manager()
         # First collection raises, rest return empty
         call_count = [0]
@@ -642,7 +642,7 @@ class TestMemoryManagerOperations:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_btc(name: str = "web_search", args: dict = None, call_id: str = "call-1"):
-    from brain.types import ToolCall
+    from neuralclaw.brain.types import ToolCall
     tc = MagicMock(spec=ToolCall)
     tc.name = name
     tc.id = call_id
@@ -651,7 +651,7 @@ def _make_btc(name: str = "web_search", args: dict = None, call_id: str = "call-
 
 
 def _make_tool_result(is_error: bool = False):
-    from skills.types import SkillResult, RiskLevel
+    from neuralclaw.skills.types import SkillResult, RiskLevel
     if is_error:
         return SkillResult.fail(
             skill_name="web_search",
@@ -668,7 +668,7 @@ def _make_tool_result(is_error: bool = False):
 
 
 def _make_session(trust_val: str = "low", active_plan=None):
-    from skills.types import TrustLevel
+    from neuralclaw.skills.types import TrustLevel
     session = MagicMock()
     session.id = "sess-test"
     session.trust_level = TrustLevel(trust_val) if trust_val in ("low", "medium", "high") else MagicMock(value=trust_val)
@@ -679,7 +679,7 @@ def _make_session(trust_val: str = "low", active_plan=None):
 
 
 def _make_executor(bus_result=None, reasoner_proceed=True):
-    from agent.executor import Executor
+    from neuralclaw.agent.executor import Executor
     registry = MagicMock()
     registry.get_schema = MagicMock(return_value=None)  # no schema = skip reasoner
 
@@ -719,7 +719,7 @@ class TestExecutorDispatch:
     async def test_reasoner_not_called_for_low_risk(self):
         executor, registry, _, reasoner, _ = _make_executor()
         # schema with LOW risk
-        from skills.types import RiskLevel
+        from neuralclaw.skills.types import RiskLevel
         schema = MagicMock()
         schema.risk_level = RiskLevel.LOW
         registry.get_schema = MagicMock(return_value=schema)
@@ -730,7 +730,7 @@ class TestExecutorDispatch:
     @pytest.mark.asyncio
     async def test_reasoner_called_for_high_risk(self):
         executor, registry, _, reasoner, _ = _make_executor(reasoner_proceed=True)
-        from skills.types import RiskLevel
+        from neuralclaw.skills.types import RiskLevel
         schema = MagicMock()
         schema.risk_level = RiskLevel.HIGH
         registry.get_schema = MagicMock(return_value=schema)
@@ -741,7 +741,7 @@ class TestExecutorDispatch:
     @pytest.mark.asyncio
     async def test_reasoner_block_returns_error_result(self):
         executor, registry, bus, _, _ = _make_executor(reasoner_proceed=False)
-        from skills.types import RiskLevel
+        from neuralclaw.skills.types import RiskLevel
         schema = MagicMock()
         schema.risk_level = RiskLevel.HIGH
         registry.get_schema = MagicMock(return_value=schema)
@@ -761,7 +761,7 @@ class TestExecutorDispatch:
     @pytest.mark.asyncio
     async def test_reasoner_uses_plan_goal_when_available(self):
         executor, registry, _, reasoner, _ = _make_executor(reasoner_proceed=True)
-        from skills.types import RiskLevel
+        from neuralclaw.skills.types import RiskLevel
         schema = MagicMock()
         schema.risk_level = RiskLevel.HIGH
         registry.get_schema = MagicMock(return_value=schema)
@@ -778,8 +778,8 @@ class TestExecutorDispatch:
     @pytest.mark.asyncio
     async def test_on_response_callback_called_on_confirmation(self):
         """Confirmation path: callback should be invoked with confirmation request."""
-        from agent.executor import Executor
-        from skills.types import SafetyDecision, SafetyStatus, RiskLevel
+        from neuralclaw.agent.executor import Executor
+        from neuralclaw.skills.types import SafetyDecision, SafetyStatus, RiskLevel
 
         registry = MagicMock()
         registry.get_schema = MagicMock(return_value=None)
@@ -787,7 +787,7 @@ class TestExecutorDispatch:
         # Bus triggers on_confirm_needed via the native dispatch signature
         async def _bus_dispatch(skill_call, trust_level, on_confirm_needed=None, granted_capabilities=frozenset()):
             if on_confirm_needed is not None:
-                from skills.types import ConfirmationRequest, RiskLevel
+                from neuralclaw.skills.types import ConfirmationRequest, RiskLevel
                 confirm_req = ConfirmationRequest(
                     skill_name="terminal",
                     skill_call_id="call-123",
@@ -795,7 +795,7 @@ class TestExecutorDispatch:
                     reason="risky",
                     arguments={},
                 )
-                with patch("agent.executor.asyncio.wait_for", return_value=True):
+                with patch("neuralclaw.agent.executor.asyncio.wait_for", return_value=True):
                     await on_confirm_needed(confirm_req)
             return _make_tool_result()
 
@@ -823,7 +823,7 @@ class TestExecutorDispatch:
 class TestFireAndForget:
     @pytest.mark.asyncio
     async def test_creates_task(self):
-        from agent.utils import fire_and_forget as _fire_and_forget
+        from neuralclaw.agent.utils import fire_and_forget as _fire_and_forget
 
         async def _noop():
             pass
@@ -834,12 +834,12 @@ class TestFireAndForget:
 
     @pytest.mark.asyncio
     async def test_logs_exception_on_failure(self):
-        from agent.utils import fire_and_forget as _fire_and_forget
+        from neuralclaw.agent.utils import fire_and_forget as _fire_and_forget
 
         async def _fail():
             raise RuntimeError("oops")
 
-        with patch("agent.utils.log") as mock_log:
+        with patch("neuralclaw.agent.utils.log") as mock_log:
             task = _fire_and_forget(_fail(), label="test_task")
             await asyncio.sleep(0.01)  # allow task to complete
             mock_log.warning.assert_called()

@@ -30,7 +30,7 @@ _ROOT = Path(__file__).parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from scheduler.scheduler import (
+from neuralclaw.scheduler.scheduler import (
     ScheduledTask,
     SchedulerStats,
     TaskRun,
@@ -38,7 +38,7 @@ from scheduler.scheduler import (
     _DEFAULT_TASKS,
     _next_run_utc,
 )
-from skills.types import TrustLevel
+from neuralclaw.skills.types import TrustLevel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ from skills.types import TrustLevel
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_turn_result(succeeded: bool = True, steps: int = 2) -> MagicMock:
-    from agent.orchestrator import TurnResult, TurnStatus, AgentResponse
+    from neuralclaw.agent.orchestrator import TurnResult, TurnStatus, AgentResponse
     tr = MagicMock()
     tr.succeeded = succeeded
     tr.steps_taken = steps

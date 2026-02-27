@@ -39,18 +39,18 @@ _real_structlog.get_logger = lambda *a, **kw: MagicMock()  # type: ignore
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── imports ───────────────────────────────────────────────────────────────────
-from agent.session import Session
-from memory.memory_manager import ContextBundle, MemoryManager
-from memory.long_term import MemoryEntry
-from memory.episodic import Episode
-from skills.types import (
+from neuralclaw.agent.session import Session
+from neuralclaw.memory.memory_manager import ContextBundle, MemoryManager
+from neuralclaw.memory.long_term import MemoryEntry
+from neuralclaw.memory.episodic import Episode
+from neuralclaw.skills.types import (
     ConfirmationRequest, RiskLevel, SafetyDecision, SafetyStatus,
     SkillCall, SkillManifest, SkillResult, TrustLevel,
 )
-from skills.registry import SkillRegistry
-from skills.bus import SkillBus
-from skills.base import SkillBase
-from safety.safety_kernel import SafetyKernel
+from neuralclaw.skills.registry import SkillRegistry
+from neuralclaw.skills.bus import SkillBus
+from neuralclaw.skills.base import SkillBase
+from neuralclaw.safety.safety_kernel import SafetyKernel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -420,7 +420,7 @@ class TestCapabilityDispatch:
 class TestContextBuilderIntegration:
     @pytest.mark.asyncio
     async def test_memory_block_injected_when_results_found(self):
-        from agent.context_builder import ContextBuilder
+        from neuralclaw.agent.context_builder import ContextBuilder
 
         mm = MagicMock(spec=MemoryManager)
         mm.build_memory_context = AsyncMock(return_value="[knowledge] Python asyncio facts")
@@ -436,7 +436,7 @@ class TestContextBuilderIntegration:
 
     @pytest.mark.asyncio
     async def test_empty_memory_not_injected(self):
-        from agent.context_builder import ContextBuilder
+        from neuralclaw.agent.context_builder import ContextBuilder
 
         mm = MagicMock(spec=MemoryManager)
         mm.build_memory_context = AsyncMock(return_value="")
@@ -450,8 +450,8 @@ class TestContextBuilderIntegration:
 
     @pytest.mark.asyncio
     async def test_memory_search_failure_doesnt_crash_build(self):
-        from agent.context_builder import ContextBuilder
-        from exceptions import MemoryError as NeuralClawMemoryError
+        from neuralclaw.agent.context_builder import ContextBuilder
+        from neuralclaw.exceptions import MemoryError as NeuralClawMemoryError
 
         mm = MagicMock(spec=MemoryManager)
         mm.build_memory_context = AsyncMock(side_effect=NeuralClawMemoryError("db error"))

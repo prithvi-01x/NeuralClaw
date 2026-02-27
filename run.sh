@@ -25,14 +25,14 @@ fi
 _SUBCOMMANDS="onboard install skills"
 
 if [[ $# -eq 0 ]]; then
-    exec "$VENV_PYTHON" "$SCRIPT_DIR/main.py" --interface cli
+    exec "$VENV_PYTHON" -m neuralclaw.main --interface cli
 fi
 
 # Check if the first arg is a known subcommand
 FIRST="$1"
 for sub in $_SUBCOMMANDS; do
     if [[ "$FIRST" == "$sub" ]]; then
-        exec "$VENV_PYTHON" "$SCRIPT_DIR/main.py" "$@"
+        exec "$VENV_PYTHON" -m neuralclaw.main "$@"
     fi
 done
 
@@ -40,8 +40,8 @@ done
 if [[ "$FIRST" != --* && "$FIRST" != -* ]]; then
     INTERFACE="$FIRST"
     shift
-    exec "$VENV_PYTHON" "$SCRIPT_DIR/main.py" --interface "$INTERFACE" "$@"
+    exec "$VENV_PYTHON" -m neuralclaw.main --interface "$INTERFACE" "$@"
 fi
 
 # Pass everything through as-is
-exec "$VENV_PYTHON" "$SCRIPT_DIR/main.py" "$@"
+exec "$VENV_PYTHON" -m neuralclaw.main "$@"

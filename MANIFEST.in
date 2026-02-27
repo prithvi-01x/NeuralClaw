@@ -1,0 +1,16 @@
+include README.md
+include LICENSE
+recursive-include src/neuralclaw/config *.yaml
+recursive-include src/neuralclaw/skills/plugins *.md
+
+# Exclude private / runtime files
+exclude .env
+exclude .env.*
+prune data
+prune venv
+prune .venv
+prune htmlcov
+prune docker
+prune scripts
+prune .pytest_cache
+prune .ruff_cache
