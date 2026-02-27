@@ -56,14 +56,17 @@ Unlike most agent frameworks that lock you into one LLM or one interface, Neural
 
 ```mermaid
 graph TD
-    subgraph INPUT["User Input"]
+
+    %% ========== INPUT ==========
+    subgraph INPUT
         CLI["CLI REPL"]
         TG["Telegram Bot"]
         VOICE["Voice Interface"]
         QTAPP["Qt Tray App"]
     end
 
-    subgraph CORE["Cognitive Kernel"]
+    %% ========== CORE ==========
+    subgraph CORE
         ORCH["Orchestrator"]
         PLANNER["Planner"]
         REASONER["Reasoner"]
@@ -71,9 +74,10 @@ graph TD
         SYNTH["Response Synthesizer"]
     end
 
-    subgraph LLM["LLM Providers"]
+    %% ========== LLM ==========
+    subgraph LLM
         FACTORY["LLM Factory"]
-        OLLAMA["Ollama (Local)"]
+        OLLAMA["Ollama"]
         OPENAI["OpenAI"]
         ANTHROPIC["Anthropic"]
         GEMINI["Gemini"]
@@ -81,76 +85,61 @@ graph TD
         OPENROUTER["OpenRouter"]
     end
 
-    subgraph SKILLBUS["Skill Bus"]
+    %% ========== SKILLS ==========
+    subgraph SKILLBUS
         BUS["Dispatcher"]
         REGISTRY["Skill Registry"]
-        subgraph BUILTIN["Built-in Skills"]
-            TERMINAL["terminal_exec"]
-            FILESYSTEM["filesystem"]
-            WEBFETCH["web_fetch"]
-            WEBSEARCH["web_search"]
-        end
-        subgraph EXTENSIONS["Extensions"]
-            PYSKILL["Python Plugins"]
-            MDSKILL["Markdown Skills"]
-            subgraph CLAWHUB["ClawHub Bridge"]
-                TIER1["Tier 1 — Prompt Injection"]
-                TIER2["Tier 2 — HTTP via httpx"]
-                TIER3["Tier 3 — Binary via SafetyKernel"]
-            end
-        end
     end
 
-    subgraph SAFETY["Safety Layer"]
+    %% ========== SAFETY ==========
+    subgraph SAFETY
         KERNEL["SafetyKernel"]
         SCORER["Risk Scorer"]
-        WHITELIST["Path & Command Whitelist"]
+        WHITELIST["Whitelist"]
     end
 
-    subgraph MEMORY["Memory"]
-        STM["Short-Term — SQLite"]
-        LTM["Long-Term — ChromaDB"]
+    %% ========== MEMORY ==========
+    subgraph MEMORY
+        STM["SQLite"]
+        LTM["ChromaDB"]
         EMBEDDER["Embedder"]
     end
 
-    CONFIG["config.yaml + .env + Settings"]
-    SCHEDULER["Task Scheduler"]
-
+    %% ========== FLOW ==========
     CLI --> ORCH
     TG --> ORCH
     VOICE --> ORCH
     QTAPP --> ORCH
 
-    ORCH -->|"retrieve context"| MEMORY
-    ORCH -->|"decompose goal"| PLANNER
-    PLANNER -->|"LLM request"| FACTORY
-    FACTORY --> OLLAMA & OPENAI & ANTHROPIC & GEMINI & BYTEZ & OPENROUTER
-    ORCH -->|"assess risk"| REASONER
-    REASONER -->|"approved calls"| EXECUTOR
-    EXECUTOR -->|"dispatch"| BUS
+    ORCH --> MEMORY
+    ORCH --> PLANNER
+    PLANNER --> FACTORY
 
-    BUS -->|"policy check"| KERNEL
+    FACTORY --> OLLAMA
+    FACTORY --> OPENAI
+    FACTORY --> ANTHROPIC
+    FACTORY --> GEMINI
+    FACTORY --> BYTEZ
+    FACTORY --> OPENROUTER
+
+    ORCH --> REASONER
+    REASONER --> EXECUTOR
+    EXECUTOR --> BUS
+
+    BUS --> KERNEL
     KERNEL --> SCORER
     KERNEL --> WHITELIST
     BUS --> REGISTRY
-    REGISTRY --> BUILTIN
-    REGISTRY --> EXTENSIONS
-    BUILTIN -->|"SkillResult"| BUS
-    EXTENSIONS -->|"SkillResult"| BUS
 
-    BUS -->|"result"| ORCH
-    ORCH -->|"format"| SYNTH
-    SYNTH -->|"response"| CLI & TG & VOICE & QTAPP
-    ORCH -->|"persist episode"| MEMORY
-    EMBEDDER -->|"vectors"| LTM
+    BUS --> ORCH
+    ORCH --> SYNTH
+    SYNTH --> CLI
+    SYNTH --> TG
+    SYNTH --> VOICE
+    SYNTH --> QTAPP
 
-    CONFIG -.->|"settings"| CORE
-    CONFIG -.->|"settings"| LLM
-    CONFIG -.->|"settings"| SKILLBUS
-    CONFIG -.->|"settings"| SAFETY
-    CONFIG -.->|"settings"| MEMORY
-
-    SCHEDULER -->|"background tasks"| ORCH
+    ORCH --> STM
+    EMBEDDER --> LTM
 ```
 
 ### Core Execution Flow
