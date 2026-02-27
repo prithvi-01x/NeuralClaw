@@ -81,6 +81,8 @@ class LongTermMemory:
         self._collections: dict[str, Any] = {}
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chromadb")
         self._lock = asyncio.Lock()
+        # Tracks which embedding model populated the collections
+        self._embedding_model_name: str = self._embedder.model_name
 
     async def init(self) -> None:
         """Initialize ChromaDB client and create all collections."""
@@ -229,7 +231,10 @@ class LongTermMemory:
         for name in COLLECTIONS:
             self._collections[name] = self._client.get_or_create_collection(
                 name=name,
-                metadata={"hnsw:space": "cosine"},
+                metadata={
+                    "hnsw:space": "cosine",
+                    "embedding_model": self._embedding_model_name,
+                },
             )
 
     def _chroma_add(
@@ -281,3 +286,25 @@ class LongTermMemory:
     async def _ensure_init(self) -> None:
         if self._client is None:
             await self.init()
+
+    def check_embedding_consistency(self) -> bool:
+        """Check if stored collections were created with the current embedding model.
+
+        Returns True if consistent (or if no metadata is stored), False if
+        the embedding model has changed since the collections were populated.
+        Logs a WARNING on mismatch so operators notice stale vectors.
+        """
+        for name, col in self._collections.items():
+            stored_meta = getattr(col, "metadata", {}) or {}
+            stored_model = stored_meta.get("embedding_model")
+            if stored_model and stored_model != self._embedding_model_name:
+                log.warning(
+                    "long_term_memory.embedding_model_mismatch",
+                    collection=name,
+                    stored_model=stored_model,
+                    current_model=self._embedding_model_name,
+                    hint="Semantic search may return poor results. "
+                         "Consider re-embedding or clearing the collection.",
+                )
+                return False
+        return True

@@ -131,7 +131,7 @@ class VoiceConfig:
         self.vad_aggressiveness: int= int(raw.get("vad_aggressiveness", 2))
         self.silence_duration_ms: int = int(raw.get("silence_duration_ms", 800))
         self.max_utterance_s: int   = int(raw.get("max_utterance_s", 30))
-        self.min_utterance_ms: int  = int(raw.get("min_utterance_ms", 0))
+        self.min_utterance_ms: int  = int(raw.get("min_utterance_ms", 300))
         # Phase G — hotword / wake word fields
         self.wake_word_enabled: bool  = bool(raw.get("wake_word_enabled", False))
         self.wake_word_model: str     = str(raw.get("wake_word_model", "hey_mycroft"))
@@ -244,12 +244,12 @@ class VoiceInterface:
         if self._hotword_detector is not None:
             try:
                 await self._hotword_detector.stop()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 log.debug("voice.hotword_stop_failed", error=str(e))
         if self._scheduler:
             try:
                 await self._scheduler.stop()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 log.debug("voice.scheduler_stop_failed", error=str(e))
         if self._memory:
             try:
@@ -304,7 +304,7 @@ class VoiceInterface:
                         if self._on_wake_detected is not None:
                             try:
                                 self._on_wake_detected(wake_event)
-                            except Exception as e:
+                            except (TypeError, ValueError, RuntimeError) as e:
                                 log.debug("voice.wake_cb_error", error=str(e))
 
                         # Phase 2: run one full voice turn
@@ -326,7 +326,7 @@ class VoiceInterface:
 
                             await self._speak(response_text)
 
-                        except Exception as e:
+                        except (VoiceError, OSError, RuntimeError) as e:
                             log.error(
                                 "voice.turn_error",
                                 error=str(e),
@@ -338,7 +338,7 @@ class VoiceInterface:
 
                 except asyncio.CancelledError:
                     return
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     log.error("hotword.loop_error", error=str(e))
                     await asyncio.sleep(1.0)
 
@@ -352,7 +352,7 @@ class VoiceInterface:
         self._memory = MemoryManager.from_settings(self._settings)
         try:
             await self._memory.init(load_embedder=True)
-        except Exception as e:
+        except (OSError, ImportError, RuntimeError) as e:
             log.warning("voice.memory_embedder_failed", error=str(e))
             await self._memory.init(load_embedder=False)
 
@@ -407,7 +407,7 @@ class VoiceInterface:
                 timezone=self._settings.scheduler.timezone,
             )
             await self._scheduler.start()
-        except Exception as e:
+        except (OSError, ImportError, RuntimeError) as e:
             log.warning("voice.scheduler_failed", error=str(e))
 
         log.info("voice.components_ready", session_id=self._session.id)
@@ -446,7 +446,7 @@ class VoiceInterface:
             except ImportError:
                 log.warning("voice.piper_not_installed",
                             hint="pip install piper-tts")
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 log.warning("voice.piper_load_failed", error=str(e))
         else:
             log.warning("voice.piper_skipped",
@@ -543,7 +543,7 @@ class VoiceInterface:
                     break
                 except VoiceTranscriptionError as e:
                     log.warning("voice.transcription_error", error=str(e))
-                except Exception as e:
+                except (VoiceError, OSError, RuntimeError) as e:
                     log.error("voice.pipeline_error",
                               error=str(e), error_type=type(e).__name__)
 
@@ -640,7 +640,7 @@ class VoiceInterface:
             try:
                 return self._vad.is_speech(frame, self._cfg.sample_rate)
             except Exception:
-                pass
+                pass  # webrtcvad C extension may raise undocumented types
 
         # Energy-based fallback: compute RMS of the int16 samples
         import struct
@@ -734,7 +734,7 @@ class VoiceInterface:
             await loop.run_in_executor(
                 None, self._play_audio, audio_array, sample_rate
             )
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             log.warning("voice.tts_failed", error=str(e))
 
     def _run_piper(self, text: str):
@@ -804,7 +804,7 @@ class VoiceInterface:
             try:
                 await loop.run_in_executor(None, self._run_piper, response_text[:200])
                 tts_ms = round((time.monotonic() - t2) * 1000)
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
 
         total_ms = stt_ms + llm_ms + tts_ms

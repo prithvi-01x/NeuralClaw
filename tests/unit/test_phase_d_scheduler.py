@@ -79,6 +79,8 @@ def _make_settings(max_concurrent: int = 3, tz: str = "UTC") -> MagicMock:
     s = MagicMock()
     s.scheduler.max_concurrent_tasks = max_concurrent
     s.scheduler.timezone = tz
+    s.scheduler.heartbeat_interval_minutes = 30
+    s.scheduler.heartbeat_enabled = True
     return s
 
 

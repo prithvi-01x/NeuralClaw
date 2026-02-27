@@ -30,7 +30,7 @@ import time
 from typing import Any, Optional
 
 from memory.embedder import Embedder
-from memory.episodic import Episode, EpisodicMemory, Reflection, ToolCallRecord
+from memory.episodic import Episode, EpisodicMemory
 from memory.long_term import LongTermMemory, MemoryEntry
 from memory.short_term import ShortTermMemory
 from memory.task import TaskMemory, TaskMemoryStore
@@ -100,14 +100,16 @@ class MemoryManager:
         self._task_store: TaskMemoryStore = TaskMemoryStore()
         self._initialized = False
 
-    async def init(self, load_embedder: bool = True) -> None:
+    async def init(self, load_embedder: bool = False) -> None:
         """
         Initialize all memory subsystems.
         Call once at agent startup.
 
         Args:
-            load_embedder: If True, preload the embedding model (recommended).
-                           Set False in tests to skip the slow model load.
+            load_embedder: If True, preload the embedding model eagerly
+                           (blocks startup for 3-10s on first run).
+                           If False (default), the model loads lazily on the
+                           first search()/embed() call instead — faster startup.
         """
         if self._initialized:
             return
@@ -356,19 +358,25 @@ class MemoryManager:
         threshold = self._relevance_threshold
 
         if long_term_results:
-            lines.append("## Relevant Memory\n")
+            header_added = False
             for collection, entries in long_term_results.items():
                 for entry in entries:
                     if entry.relevance_score > threshold:
+                        if not header_added:
+                            lines.append("## Relevant Memory\n")
+                            header_added = True
                         lines.append(f"[{collection}] {entry.text[:300]}")
 
         if recent_episodes:
-            lines.append("\n## Recent Episodes")
+            ep_header_added = False
             for ep in recent_episodes:
+                if not ep_header_added:
+                    lines.append("\n## Recent Episodes")
+                    ep_header_added = True
                 outcome_icon = "✅" if ep.outcome == "success" else "❌"
                 lines.append(f"{outcome_icon} {ep.goal} → {ep.outcome}")
 
-        summary = "\n".join(lines) if len(lines) > 1 else ""
+        summary = "\n".join(lines) if lines else ""
 
         return ContextBundle(
             summary=summary,

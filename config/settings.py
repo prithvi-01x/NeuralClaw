@@ -17,6 +17,7 @@ Phase 1 hardening (core-hardening):
 from __future__ import annotations
 
 import os
+import threading as _threading
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -310,6 +311,74 @@ class SchedulerConfig(BaseModel):
         return v
 
 
+class GatewayConfig(BaseModel):
+    """WebSocket Gateway control plane settings."""
+    host: str = "127.0.0.1"
+    port: int = 9090
+    auth_token: Optional[str] = None
+    max_connections: int = 10
+
+    @field_validator("port")
+    @classmethod
+    def _valid_port(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError("gateway.port must be between 1 and 65535")
+        return v
+
+
+class SkillsRetryOverrideConfig(BaseModel):
+    """Per-skill retry policy override."""
+    max_attempts: int = 3
+
+
+class SkillsRetryConfig(BaseModel):
+    """Skill retry policy from config.yaml skills.retry section."""
+    retryable_errors: List[str] = Field(
+        default_factory=lambda: ["SkillTimeoutError", "LLMRateLimitError"]
+    )
+    max_attempts: int = 3
+    base_delay: float = 1.0
+    max_delay: float = 30.0
+    jitter: bool = True
+    overrides: dict[str, SkillsRetryOverrideConfig] = Field(default_factory=dict)
+
+
+class SkillsConfig(BaseModel):
+    """Top-level skills config section."""
+    retry: SkillsRetryConfig = Field(default_factory=SkillsRetryConfig)
+
+
+class ClawhubExecutionSettings(BaseModel):
+    """Tier 3 execution controls."""
+    allow_binary_skills: bool = True
+    auto_install_deps: bool = False
+    sandbox_binary_skills: bool = True
+
+
+class ClawhubEnvSettings(BaseModel):
+    """Env-var handling for ClawHub skills."""
+    block_on_missing_env: bool = True
+    show_env_requirements_on_install: bool = True
+
+
+class ClawhubRiskDefaults(BaseModel):
+    """Default risk levels assigned to each ClawHub tier."""
+    prompt_only: str = "LOW"
+    api_http: str = "LOW"
+    binary_execution: str = "HIGH"
+    install_directive: str = "HIGH"
+
+
+class ClawhubSettings(BaseModel):
+    """ClawHub Bridge Adapter configuration."""
+    enabled: bool = True
+    skills_dir: str = "./data/clawhub/skills"
+    registry_url: str = "https://clawhub.ai"
+    execution: ClawhubExecutionSettings = Field(default_factory=ClawhubExecutionSettings)
+    env: ClawhubEnvSettings = Field(default_factory=ClawhubEnvSettings)
+    risk_defaults: ClawhubRiskDefaults = Field(default_factory=ClawhubRiskDefaults)
+
+
 class LoggingConfig(BaseModel):
     level: str = "INFO"
     log_dir: str = "./data/logs"
@@ -384,6 +453,9 @@ class Settings(BaseSettings):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    clawhub: ClawhubSettings = Field(default_factory=ClawhubSettings)
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
 
     @field_validator("telegram_user_id", mode="before")
     @classmethod
@@ -441,6 +513,21 @@ class Settings(BaseSettings):
     @classmethod
     def _coerce_logging(cls, v: Any) -> Any:
         return LoggingConfig(**v) if isinstance(v, dict) else v
+
+    @field_validator("skills", mode="before")
+    @classmethod
+    def _coerce_skills(cls, v: Any) -> Any:
+        return SkillsConfig(**v) if isinstance(v, dict) else v
+
+    @field_validator("clawhub", mode="before")
+    @classmethod
+    def _coerce_clawhub(cls, v: Any) -> Any:
+        return ClawhubSettings(**v) if isinstance(v, dict) else v
+
+    @field_validator("gateway", mode="before")
+    @classmethod
+    def _coerce_gateway(cls, v: Any) -> Any:
+        return GatewayConfig(**v) if isinstance(v, dict) else v
 
     # -- Convenience properties ----------------------------------------------
 
@@ -583,7 +670,7 @@ class Settings(BaseSettings):
 # Loader + singleton
 # ─────────────────────────────────────────────────────────────────────────────
 
-import threading as _threading
+
 
 _singleton: Optional[Settings] = None
 _singleton_lock = _threading.Lock()
@@ -627,6 +714,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     _KNOWN_SECTIONS = {
         "agent", "llm", "memory", "tools", "safety",
         "mcp", "telegram", "scheduler", "voice", "logging",
+        "skills", "clawhub", "gateway",
     }
     init_kwargs = {k: v for k, v in yaml_data.items() if k in _KNOWN_SECTIONS}
 

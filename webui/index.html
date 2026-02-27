@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NeuralClaw — AI Agent</title>
+  <meta name="description" content="NeuralClaw — Local-first autonomous AI agent control panel">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+
+<body>
+  <div class="app" id="app">
+    <!-- ── Sidebar ──────────────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <span class="logo-icon">🐾</span>
+          <span class="logo-text">NeuralClaw</span>
+        </div>
+        <span class="version">v1.0.0 · Web UI</span>
+      </div>
+
+      <!-- Connection Status -->
+      <div class="connection-badge" id="connection-badge">
+        <span class="status-dot disconnected"></span>
+        <span id="connection-text">Disconnected</span>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-tab="chat" id="nav-chat">
+          <span class="tab-icon">💬</span> Chat
+        </button>
+        <button class="nav-tab" data-tab="settings" id="nav-settings">
+          <span class="tab-icon">⚙️</span> Settings
+        </button>
+        <button class="nav-tab" data-tab="skills" id="nav-skills">
+          <span class="tab-icon">🔧</span> Skills
+        </button>
+        <button class="nav-tab" data-tab="env" id="nav-env">
+          <span class="tab-icon">🔑</span> Env Vars
+        </button>
+        <button class="nav-tab" data-tab="system" id="nav-system">
+          <span class="tab-icon">📊</span> System
+        </button>
+      </nav>
+
+      <!-- Session Info (visible in chat tab) -->
+      <div class="session-info" id="session-info">
+        <div class="info-section">
+          <h4>SESSION</h4>
+          <span id="session-id" class="mono">—</span>
+        </div>
+        <div class="info-section">
+          <h4>TRUST LEVEL</h4>
+          <div class="trust-buttons">
+            <button class="trust-btn active" data-level="low">Low</button>
+            <button class="trust-btn" data-level="medium">Med</button>
+            <button class="trust-btn" data-level="high">High</button>
+          </div>
+        </div>
+        <div class="info-section">
+          <h4>STATS</h4>
+          <span class="mono" id="stats-display">Turns: 0 · Tools: 0</span>
+        </div>
+        <div class="info-section">
+          <h4>CAPABILITIES</h4>
+          <span class="mono" id="caps-display">None granted</span>
+        </div>
+      </div>
+
+      <!-- Sidebar Bottom -->
+      <div class="sidebar-bottom">
+        <button class="sidebar-btn" id="btn-clear-chat">🗑️ Clear Chat</button>
+        <button class="sidebar-btn" id="btn-reconnect">🔄 Reconnect</button>
+      </div>
+    </aside>
+
+    <!-- ── Main Content ──────────────────────────────────── -->
+    <main class="main-content">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <button class="hamburger" id="hamburger">☰</button>
+        <h1 class="topbar-title" id="topbar-title">NeuralClaw</h1>
+        <div class="topbar-actions">
+          <span class="connection-indicator" id="topbar-status"></span>
+        </div>
+      </header>
+
+      <!-- ── Chat Tab ──────────────────────────────────────── -->
+      <div class="tab-content active" id="tab-chat">
+        <div class="messages" id="messages">
+          <div class="welcome-screen" id="welcome-screen">
+            <div class="welcome-icon">🐾</div>
+            <h2>Welcome to NeuralClaw</h2>
+            <p>Your local-first autonomous AI agent. Ask anything, run tasks, and let the tools handle the rest.</p>
+            <div class="quick-actions">
+              <button class="chip" data-msg="What can you do?">💡 What can you do?</button>
+              <button class="chip" data-msg="Search the web for latest AI news">🔍 Search the web</button>
+              <button class="chip" data-msg="List all available tools">🔧 List tools</button>
+              <button class="chip" data-msg="/run Check system status">🚀 Run a task</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Confirmation Dialog -->
+        <div class="confirm-dialog hidden" id="confirm-dialog">
+          <div class="confirm-content">
+            <h3>⚠️ Confirmation Required</h3>
+            <p id="confirm-skill"></p>
+            <p id="confirm-reason"></p>
+            <pre id="confirm-args"></pre>
+            <div class="confirm-actions">
+              <button class="btn btn-deny" id="btn-deny">Deny</button>
+              <button class="btn btn-approve" id="btn-approve">Approve</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="input-area">
+          <div class="input-wrapper">
+            <textarea id="user-input" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
+            <button class="send-btn" id="send-btn">▶</button>
+          </div>
+          <div class="input-hints">
+            <kbd>Enter</kbd> to send · <kbd>Shift+Enter</kbd> for newline · <kbd>/run</kbd> for autonomous mode
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Settings Tab ────────────────────────────────── -->
+      <div class="tab-content" id="tab-settings">
+        <div class="admin-panel">
+          <div class="panel-header">
+            <h2>⚙️ Configuration</h2>
+            <p>Edit config.yaml — changes take effect on restart</p>
+          </div>
+          <div class="panel-body" id="config-editor">
+            <div class="loading-state">Loading config...</div>
+          </div>
+          <div class="panel-footer">
+            <button class="btn btn-primary" id="btn-save-config">💾 Save Config</button>
+            <span class="save-status" id="config-status"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Skills Tab ──────────────────────────────────── -->
+      <div class="tab-content" id="tab-skills">
+        <div class="admin-panel">
+          <div class="panel-header">
+            <h2>🔧 Skills Manager</h2>
+            <p>View and manage installed skills</p>
+            <button class="btn btn-secondary" id="btn-reload-skills">🔄 Reload Skills</button>
+          </div>
+          <div class="panel-body" id="skills-list">
+            <div class="loading-state">Loading skills...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Env Vars Tab ────────────────────────────────── -->
+      <div class="tab-content" id="tab-env">
+        <div class="admin-panel">
+          <div class="panel-header">
+            <h2>🔑 Environment Variables</h2>
+            <p>Manage API keys and secrets in .env</p>
+          </div>
+          <div class="panel-body" id="env-list">
+            <div class="loading-state">Loading environment variables...</div>
+          </div>
+          <div class="panel-footer">
+            <button class="btn btn-secondary" id="btn-add-env">➕ Add Variable</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── System Tab ──────────────────────────────────── -->
+      <div class="tab-content" id="tab-system">
+        <div class="admin-panel">
+          <div class="panel-header">
+            <h2>📊 System Info</h2>
+            <p>Agent status and diagnostics</p>
+          </div>
+          <div class="panel-body" id="system-info">
+            <div class="loading-state">Loading system info...</div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>

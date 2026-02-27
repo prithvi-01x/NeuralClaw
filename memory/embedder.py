@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import atexit
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
@@ -42,6 +43,9 @@ class Embedder:
         self._model = None
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="embedder")
         self._lock = asyncio.Lock()
+        # Register clean shutdown on any process exit (SIGTERM, Ctrl+C, normal exit).
+        # wait=False so the GC doesn't block indefinitely on in-flight embeds.
+        atexit.register(self._executor.shutdown, wait=False)
 
     async def load(self) -> None:
         """
@@ -148,16 +152,38 @@ class Embedder:
     @staticmethod
     def _import_and_load(model_name: str):
         """Synchronous model load — runs in thread pool."""
+        import sys, io, logging, warnings, os
         from sentence_transformers import SentenceTransformer
-        return SentenceTransformer(model_name)
+        
+        # Suppress HF Hub unauthenticated warning and tqdm
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        os.environ.setdefault("TQDM_DISABLE", "1")
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+        logging.getLogger("huggingface_hub.utils._headers").setLevel(logging.ERROR)
+        warnings.filterwarnings("ignore", message=".*unauthenticated.*")
+        warnings.filterwarnings("ignore", message=".*HF_TOKEN.*")
+
+        class _SuppressStdout:
+            def __enter__(self):
+                self._orig = sys.stdout
+                sys.stdout = io.StringIO()
+                logging.getLogger("transformers").setLevel(logging.ERROR)
+                logging.getLogger("mlx").setLevel(logging.CRITICAL)
+                return self
+            def __exit__(self, *_):
+                sys.stdout = self._orig
+                logging.getLogger("transformers").setLevel(logging.WARNING)
+                
+        with _SuppressStdout():
+            return SentenceTransformer(model_name)
 
     def _encode_single(self, text: str):
         """Synchronous single encode — runs in thread pool."""
-        return self._model.encode(text, normalize_embeddings=True)
+        return self._model.encode(text, normalize_embeddings=True, show_progress_bar=False)
 
     def _encode_batch(self, texts: list[str]):
         """Synchronous batch encode — runs in thread pool."""
-        return self._model.encode(texts, normalize_embeddings=True, batch_size=32)
+        return self._model.encode(texts, normalize_embeddings=True, batch_size=32, show_progress_bar=False)
 
     def close(self) -> None:
         """Shut down the thread-pool executor cleanly to avoid interpreter-shutdown warnings."""

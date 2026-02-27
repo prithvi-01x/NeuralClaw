@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Optional
 
 from brain.types import LLMResponse
-from skills.types import ConfirmationRequest, RiskLevel, SafetyDecision, SkillResult
+from skills.types import ConfirmationRequest, RiskLevel, SkillResult
 
 
 class ResponseKind(str, Enum):

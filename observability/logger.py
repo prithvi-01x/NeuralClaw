@@ -235,3 +235,36 @@ def clear_session() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _log = get_logger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Portable logger shim — works with or without structlog
+# ─────────────────────────────────────────────────────────────────────────────
+
+def portable_log(name: str):
+    """
+    Return a callable ``log(level, event, **kwargs)`` that works regardless
+    of whether structlog is available.
+
+    Usage (replaces the copy-pasted try/except + _log shim in skills/)::
+
+        from observability.logger import portable_log
+        _log = portable_log(__name__)
+        _log("info", "skill_bus.dispatching", skill="terminal_exec")
+    """
+    try:
+        bound = get_logger(name)
+        _is_structlog = True
+    except Exception:
+        import logging as _fallback_logging
+        bound = _fallback_logging.getLogger(name)
+        _is_structlog = False
+
+    def _emit(level: str, event: str, **kwargs) -> None:
+        if _is_structlog:
+            getattr(bound, level)(event, **kwargs)
+        else:
+            extra = " ".join(f"{k}={v}" for k, v in kwargs.items())
+            getattr(bound, level)("%s %s", event, extra)
+
+    return _emit

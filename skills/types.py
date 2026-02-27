@@ -164,6 +164,7 @@ class SkillResult:
         error_type: str = "SkillError",
         duration_ms: float = 0.0,
         blocked: bool = False,
+        metadata: Optional[dict] = None,
     ) -> "SkillResult":
         return cls(
             success=False,
@@ -174,6 +175,7 @@ class SkillResult:
             error_type=error_type,
             duration_ms=duration_ms,
             blocked=blocked,
+            metadata=metadata or {},
         )
 
     def to_llm_content(self) -> str:
@@ -290,6 +292,19 @@ class ConfirmationRequest:
             reason=decision.reason,
             arguments=arguments or {},
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Known capabilities — shared constant for CLI and Telegram UI
+# ─────────────────────────────────────────────────────────────────────────────
+
+KNOWN_CAPABILITIES: dict[str, str] = {
+    "fs:read":   "Read files within allowed paths",
+    "fs:write":  "Write and append files within allowed paths",
+    "fs:delete": "Delete files (requires explicit grant)",
+    "shell:run": "Execute whitelisted terminal commands",
+    "net:fetch": "Fetch URLs and perform web searches",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

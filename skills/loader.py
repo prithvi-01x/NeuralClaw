@@ -31,22 +31,9 @@ from skills.base import SkillBase
 from skills.registry import SkillRegistry
 from skills.types import SkillValidationError
 
-try:
-    from observability.logger import get_logger as _get_logger
-    _log_raw = _get_logger(__name__)
-    _STRUCTLOG = True
-except ImportError:
-    import logging as _logging
-    _log_raw = _logging.getLogger(__name__)
-    _STRUCTLOG = False
+from observability.logger import portable_log
 
-
-def _log(level, event, **kwargs):
-    if _STRUCTLOG:
-        getattr(_log_raw, level)(event, **kwargs)
-    else:
-        extra = " ".join(f"{k}={v}" for k, v in kwargs.items())
-        getattr(_log_raw, level)("%s %s", event, extra)
+_log = portable_log(__name__)
 
 
 class SkillLoader:

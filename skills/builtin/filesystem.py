@@ -80,7 +80,7 @@ class FileReadSkill(SkillBase):
             return SkillResult.fail(self.manifest.name, call_id, str(e), "PermissionError")
         except FileNotFoundError as e:
             return SkillResult.fail(self.manifest.name, call_id, str(e), "FileNotFoundError")
-        except (OSError, ValueError, RuntimeError, PermissionError, IOError) as e:
+        except (OSError, ValueError, RuntimeError, IOError) as e:
             return SkillResult.fail(self.manifest.name, call_id, f"{type(e).__name__}: {e}", type(e).__name__)
 
 
@@ -124,7 +124,7 @@ class FileWriteSkill(SkillBase):
             )
         except PermissionError as e:
             return SkillResult.fail(self.manifest.name, call_id, str(e), "PermissionError")
-        except (OSError, ValueError, RuntimeError, PermissionError, IOError) as e:
+        except (OSError, ValueError, RuntimeError, IOError) as e:
             return SkillResult.fail(self.manifest.name, call_id, f"{type(e).__name__}: {e}", type(e).__name__)
 
 
@@ -162,7 +162,7 @@ class FileAppendSkill(SkillBase):
             )
         except PermissionError as e:
             return SkillResult.fail(self.manifest.name, call_id, str(e), "PermissionError")
-        except (OSError, ValueError, RuntimeError, PermissionError, IOError) as e:
+        except (OSError, ValueError, RuntimeError, IOError) as e:
             return SkillResult.fail(self.manifest.name, call_id, f"{type(e).__name__}: {e}", type(e).__name__)
 
 
@@ -215,7 +215,7 @@ class ListDirSkill(SkillBase):
             )
         except (FileNotFoundError, ValueError) as e:
             return SkillResult.fail(self.manifest.name, call_id, str(e), type(e).__name__)
-        except (OSError, ValueError, RuntimeError, PermissionError, IOError) as e:
+        except (OSError, RuntimeError, PermissionError, IOError) as e:
             return SkillResult.fail(self.manifest.name, call_id, f"{type(e).__name__}: {e}", type(e).__name__)
 
 

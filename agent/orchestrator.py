@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional
 
@@ -47,7 +47,7 @@ from observability.logger import bind_session, clear_session, get_logger
 from observability.trace import TraceContext
 from skills.bus import SkillBus
 from skills.registry import SkillRegistry
-from skills.types import RiskLevel, TrustLevel
+from skills.types import RiskLevel
 from skills.md_loader import MarkdownSkillLoader as _MdSkillLoader
 
 from agent.context_builder import ContextBuilder
@@ -56,8 +56,8 @@ from agent.planner import Planner
 from agent.reasoner import Reasoner
 from agent.reflector import Reflector
 from agent.response_synthesizer import AgentResponse, ResponseKind, ResponseSynthesizer
-from agent.session import ActivePlan, PlanStep, Session
-from exceptions import NeuralClawError, PlanError, IterationLimitError, LLMError, MemoryError
+from agent.session import PlanStep, Session
+from exceptions import NeuralClawError, LLMError, MemoryError
 from brain.capabilities import get_capabilities
 
 log = get_logger(__name__)
@@ -180,11 +180,19 @@ def _provider_name_from_client(client) -> str:
 
 
 def _unwrap_resilient(client):
-    """Return the inner primary client if wrapped in ResilientLLMClient, else the client itself."""
+    """Recursively unwrap nested ResilientLLMClient wrappers.
+
+    Returns (innermost_client, outermost_wrapper).  If client is not
+    wrapped at all, returns (client, None).
+    """
     from brain.llm_client import ResilientLLMClient
-    if isinstance(client, ResilientLLMClient):
-        return client._primary, client
-    return client, None
+    outermost = None
+    current = client
+    while isinstance(current, ResilientLLMClient):
+        if outermost is None:
+            outermost = current
+        current = current._primary
+    return current, outermost
 
 
 def _register_no_tools(client, model_id: str) -> None:
@@ -225,6 +233,7 @@ class Orchestrator:
         max_iterations: int = _MAX_ITER,
         max_turn_timeout: int = 300,
         on_response: Optional[Callable[[AgentResponse], None]] = None,
+        settings = None,
     ):
         self._llm = llm_client
         self._config = llm_config
@@ -265,8 +274,12 @@ class Orchestrator:
         # (first call or after swap_llm_client invalidates it).
         self._cached_md_instructions: str | None = None
 
+        # Idempotency guard — prevents two concurrent /compact calls from
+        # both summarising and overwriting each other's results.
+        self._compaction_in_progress: bool = False
+
         # Set by from_settings(); None when constructed directly (tests, etc.)
-        self._settings = None
+        self._settings = settings
     # ─────────────────────────────────────────────────────────────────────────
 
     def reset_tool_support(self) -> None:
@@ -483,7 +496,15 @@ class Orchestrator:
 
         try:
             # 1. Plan
-            available_tools = self._registry.list_names()
+            # Only show the planner tools the session can actually use.
+            # This prevents planning steps that will be blocked by the safety kernel.
+            available_tools = [
+                s.name
+                for s in self._registry.list_schemas(
+                    enabled_only=True,
+                    granted=session.granted_capabilities,
+                )
+            ]
             memory_ctx = await self._memory.build_memory_context(goal, session.id)
             plan_result = await self._planner.create_plan(
                 goal=goal, available_tools=available_tools, context=memory_ctx
@@ -700,8 +721,6 @@ class Orchestrator:
                     ),
                 )
 
-            session.clear_plan()
-
         except asyncio.CancelledError:
             yield self._synth.cancelled()
         except NeuralClawError as e:
@@ -711,6 +730,9 @@ class Orchestrator:
             log.error("orchestrator.autonomous_unexpected_error", error=str(e), error_type=type(e).__name__, exc_info=True)
             yield self._synth.error(type(e).__name__, detail=str(e))
         finally:
+            # Always clean up — this runs even if timeout/cancel interrupted
+            # the try block before task_fail()/clear_plan() could execute.
+            session.clear_plan()
             clear_session()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -744,18 +766,21 @@ class Orchestrator:
         )
         _supports_tools = _client_supports and _registry_caps.supports_tools
 
-        # Build (or reuse cached) tool schema list — registry is static after
-        # startup so we rebuild only when the cache is cold or after a model swap.
-        if self._cached_tool_schemas is None:
-            self._cached_tool_schemas = [
-                BrainToolSchema(
-                    name=s.name,
-                    description=s.description,
-                    parameters=s.parameters,
-                )
-                for s in self._registry.list_schemas(enabled_only=True)
-            ]
-        all_tool_schemas = self._cached_tool_schemas
+        # Build tool schema list — show ALL enabled skills to the LLM.
+        # Capability enforcement happens at execution time in the safety kernel,
+        # not at tool-visibility time. Hiding tools from the LLM is too aggressive:
+        # the LLM can't use a tool it doesn't know exists.
+        all_tool_schemas = [
+            BrainToolSchema(
+                name=s.name,
+                description=s.description,
+                parameters=s.parameters,
+            )
+            for s in self._registry.list_schemas(
+                enabled_only=True,
+                granted=None,  # show all enabled skills regardless of capability grants
+            )
+        ]
         llm_tools: list[BrainToolSchema] = all_tool_schemas if _supports_tools else []
 
         if not _supports_tools:
@@ -851,7 +876,17 @@ class Orchestrator:
                         steps_taken=steps_taken,
                         duration_ms=(time.monotonic() - t0) * 1000,
                     )
-            except (NeuralClawError, LLMError, BaseException) as e:
+            except (NeuralClawError, LLMError) as e:
+                log.error("orchestrator.llm_error", error=str(e), error_type=type(e).__name__, exc_info=True)
+                return TurnResult(
+                    status=TurnStatus.ERROR,
+                    response=self._synth.error(type(e).__name__, detail=str(e)),
+                    steps_taken=steps_taken,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
                 log.error("orchestrator.llm_error", error=str(e), error_type=type(e).__name__, exc_info=True)
                 return TurnResult(
                     status=TurnStatus.ERROR,
@@ -994,9 +1029,22 @@ class Orchestrator:
             if result.is_error and getattr(result, "blocked", False):
                 blocked = True
 
+        # Gracefully fill any unfilled slots rather than crashing the turn.
+        # This should never happen, but if it does the turn continues with
+        # an error message instead of an internal RuntimeError.
         unfilled = [i for i, r in enumerate(results) if r is None]
         if unfilled:
-            raise RuntimeError(f"BUG: unfilled tool result slots at indices {unfilled}")
+            log.error(
+                "orchestrator.unfilled_tool_slots",
+                indices=unfilled,
+                total=len(brain_tool_calls),
+            )
+            for idx in unfilled:
+                btc = brain_tool_calls[idx]
+                results[idx] = _make_legacy_error(
+                    btc.id, btc.name,
+                    "Tool execution did not produce a result. Please try again.",
+                )
 
         return results, blocked  # type: ignore[return-value]
 
@@ -1016,33 +1064,43 @@ class Orchestrator:
         Also persists the summary to long-term memory so it survives restarts.
 
         Returns the summary text for display.
-        Raises RuntimeError if there is nothing to compact.
+        Raises RuntimeError if there is nothing to compact or if a compaction
+        is already in progress (idempotency guard).
         """
-        summary = await session.memory.compact(
-            llm_client=self._llm,
-            llm_config=self._config,
-            keep_recent=keep_recent,
-        )
+        if self._compaction_in_progress:
+            raise RuntimeError(
+                "Compaction already in progress — please wait for it to finish."
+            )
 
-        # Persist to long-term memory (fire-and-forget)
-        _fire_and_forget(self._memory.store(
-            f"[Compact summary] {summary}",
-            collection="conversations",
-            metadata={
-                "session_id": session.id,
-                "user_id":    session.user_id,
-                "type":       "compact_summary",
-                "turn":       session.turn_count,
-            },
-        ), label="compact_summary_store")
+        self._compaction_in_progress = True
+        try:
+            summary = await session.memory.compact(
+                llm_client=self._llm,
+                llm_config=self._config,
+                keep_recent=keep_recent,
+            )
 
-        log.info(
-            "orchestrator.session_compacted",
-            session_id=session.id,
-            turn=session.turn_count,
-            keep_recent=keep_recent,
-        )
-        return summary
+            # Persist to long-term memory (fire-and-forget)
+            _fire_and_forget(self._memory.store(
+                f"[Compact summary] {summary}",
+                collection="conversations",
+                metadata={
+                    "session_id": session.id,
+                    "user_id":    session.user_id,
+                    "type":       "compact_summary",
+                    "turn":       session.turn_count,
+                },
+            ), label="compact_summary_store")
+
+            log.info(
+                "orchestrator.session_compacted",
+                session_id=session.id,
+                turn=session.turn_count,
+                keep_recent=keep_recent,
+            )
+            return summary
+        finally:
+            self._compaction_in_progress = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Memory persistence
@@ -1093,10 +1151,10 @@ class Orchestrator:
             max_iterations=settings.agent.max_iterations_per_turn,
             max_turn_timeout=settings.agent.max_turn_timeout_seconds,
             on_response=on_response,
+            settings=settings,
         )
         
         # Override the defaults in the raw constructor now that we have the full settings
         # Used for run_autonomous
-        orch._settings = settings
         orch._executor._confirmation_timeout = settings.agent.confirmation_timeout_seconds
         return orch

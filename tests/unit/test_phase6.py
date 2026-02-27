@@ -261,7 +261,7 @@ class TestRetryPolicy:
         p = RetryPolicy(base_delay=2.0, max_delay=30.0, jitter=True)
         for _ in range(30):
             d = p.delay_for_attempt(1)
-            assert 1.0 <= d <= 2.0  # jitter is [50%, 100%] of base_delay
+            assert 1.6 <= d <= 2.4  # jitter is [80%, 120%] of base_delay
 
     def test_terminal_exec_override_is_max_1(self):
         from skills.bus import _SKILL_RETRY_OVERRIDES

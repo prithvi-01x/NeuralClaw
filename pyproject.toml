@@ -8,6 +8,9 @@ authors = [
     { name = "Solo Developer" }
 ]
 
+[project.scripts]
+neuralclaw = "neuralclaw_cli:main"
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100

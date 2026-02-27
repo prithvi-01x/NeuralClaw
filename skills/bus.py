@@ -24,32 +24,21 @@ import json
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from skills.registry import SkillRegistry
 from skills.types import (
-    ConfirmationRequest, RiskLevel, SafetyDecision, SafetyStatus,
+    ConfirmationRequest, RiskLevel, SafetyDecision,
     SkillCall, SkillResult, TrustLevel,
 )
 from exceptions import NeuralClawError
 
-try:
-    from observability.logger import get_logger as _get_logger
-    _log_raw = _get_logger(__name__)
-    _STRUCTLOG = True
-except ImportError:
-    import logging as _logging
-    _log_raw = _logging.getLogger(__name__)
-    _STRUCTLOG = False
+from observability.logger import portable_log
 
+if TYPE_CHECKING:
+    from safety.safety_kernel import SafetyKernel
 
-def _log(level, event, **kwargs):
-    """Portable structured logger — works with structlog and stdlib logging."""
-    if _STRUCTLOG:
-        getattr(_log_raw, level)(event, **kwargs)
-    else:
-        extra = " ".join(f"{k}={v}" for k, v in kwargs.items())
-        getattr(_log_raw, level)("%s %s", event, extra)
+_log = portable_log(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,7 +72,9 @@ class RetryPolicy:
         """Return sleep duration (seconds) before the given retry attempt (1-indexed)."""
         delay = min(self.base_delay * (2 ** (attempt - 1)), self.max_delay)
         if self.jitter:
-            delay *= (0.5 + random.random() * 0.5)  # uniform jitter in [50%, 100%]
+            # Full jitter in [80%, 120%] of the computed delay — keeps the mean
+            # close to the calculated value while decorrelating concurrent retries.
+            delay *= (0.8 + random.random() * 0.4)
         return delay
 
 
@@ -100,8 +91,54 @@ MAX_RESULT_CHARS = 8_000
 # Default timeout when manifest doesn't specify one
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
-# Skills that must never be retried (not idempotent)
-_NO_RETRY_SKILLS: frozenset[str] = frozenset(["terminal_exec"])
+
+
+
+
+def configure_retry_policy(settings) -> None:
+    """
+    Apply config.yaml ``skills.retry.*`` values to the module-level retry
+    defaults and per-skill overrides.
+
+    Called once at kernel startup so that edits to config.yaml take effect
+    without code changes.  Safe to call multiple times (idempotent).
+
+    Args:
+        settings: A ``config.settings.Settings`` (or anything with
+                  ``settings.skills.retry``).
+    """
+    global _DEFAULT_RETRY
+    retry_cfg = getattr(getattr(settings, "skills", None), "retry", None)
+    if retry_cfg is None:
+        return
+
+    _DEFAULT_RETRY = RetryPolicy(
+        max_attempts=getattr(retry_cfg, "max_attempts", 3),
+        base_delay=getattr(retry_cfg, "base_delay", 1.0),
+        max_delay=getattr(retry_cfg, "max_delay", 30.0),
+        jitter=getattr(retry_cfg, "jitter", True),
+        retryable_errors=frozenset(
+            getattr(retry_cfg, "retryable_errors", ["SkillTimeoutError", "LLMRateLimitError"])
+        ),
+    )
+
+    overrides = getattr(retry_cfg, "overrides", {}) or {}
+    for skill_name, override in overrides.items():
+        max_att = getattr(override, "max_attempts", None)
+        if max_att is None and isinstance(override, dict):
+            max_att = override.get("max_attempts")
+        if max_att is not None:
+            _SKILL_RETRY_OVERRIDES[skill_name] = RetryPolicy(
+                max_attempts=max_att,
+                base_delay=_DEFAULT_RETRY.base_delay,
+                max_delay=_DEFAULT_RETRY.max_delay,
+                jitter=_DEFAULT_RETRY.jitter,
+                retryable_errors=_DEFAULT_RETRY.retryable_errors,
+            )
+
+    _log("info", "skill_bus.retry_policy_configured",
+         default_max_attempts=_DEFAULT_RETRY.max_attempts,
+         overrides=list(_SKILL_RETRY_OVERRIDES.keys()))
 
 
 class SkillBus:
@@ -117,10 +154,10 @@ class SkillBus:
     def __init__(
         self,
         registry: SkillRegistry,
-        safety_kernel,                          # SafetyKernel — typed loosely to avoid circular import
+        safety_kernel: SafetyKernel,
         default_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         on_confirm_needed: Optional[Callable] = None,
-        extra_skill_kwargs: Optional[dict] = None,
+        extra_skill_kwargs: Optional[dict[str, Any]] = None,
     ) -> None:
         self._registry          = registry
         self._safety            = safety_kernel
@@ -237,13 +274,19 @@ class SkillBus:
 
         if decision is not None and decision.is_blocked:
             _log("warning", "skill_bus.blocked", skill=call.skill_name, reason=decision.reason)
+            error_msg = f"Blocked by safety kernel: {decision.reason}"
+            # U7: Append user-facing grant hint if blocked due to missing capabilities
+            from skills.discovery import capability_hint_from_reason
+            hint = capability_hint_from_reason(decision.reason)
+            if hint:
+                error_msg += f"\n{hint}"
             return SkillResult.fail(
                 skill_name=call.skill_name,
                 skill_call_id=call.id,
-                error=f"Blocked by safety kernel: {decision.reason}",
+                error=error_msg,
                 error_type="SafetyBlockedError",
                 duration_ms=_ms(start),
-                blocked=True,                    # typed signal — no string sniffing needed
+                blocked=True,
             )
 
         if decision is not None and decision.needs_confirmation:
@@ -331,53 +374,35 @@ class SkillBus:
                     duration_ms=duration,
                 )
 
-        # If the skill returned a failed SkillResult, honour it — do NOT wrap in .ok()
-        if isinstance(result, SkillResult) and not result.success:
-            return result
-
-        # Inject risk_level into metadata for executor/memory recording
+        # Build the final SkillResult exactly once
         risk_val = decision.risk_level.value if decision else skill.manifest.risk_level.value
-        if not isinstance(result, SkillResult):
-            # Skill returned a raw value (str/dict/etc.) — wrap in SkillResult.ok
-            result = SkillResult.ok(
-                skill_name=call.skill_name,
-                skill_call_id=call.id,
-                output=result,
-                duration_ms=duration,
-                metadata={"risk_level": risk_val},
-            )
-        elif not result.metadata.get("risk_level"):
-            # Successful SkillResult without risk_level — inject it
-            result = SkillResult.ok(
-                skill_name=result.skill_name,
-                skill_call_id=result.skill_call_id,
-                output=result.output,
-                duration_ms=duration,
-                metadata={**result.metadata, "risk_level": risk_val},
-            )
-        else:
-            # Successful SkillResult with risk_level already set — update duration only
-            result = SkillResult.ok(
-                skill_name=result.skill_name,
-                skill_call_id=result.skill_call_id,
-                output=result.output,
-                duration_ms=duration,
-                metadata={**result.metadata, "risk_level": risk_val},
-            )
 
-        # Truncate large outputs
-        if isinstance(result.output, str) and len(result.output) > MAX_RESULT_CHARS:
-            truncated_output = (
-                result.output[:MAX_RESULT_CHARS]
-                + f"\n\n[Output truncated — {len(result.output) - MAX_RESULT_CHARS} chars omitted]"
+        if isinstance(result, SkillResult) and result.success:
+            output = result.output
+            meta = {**result.metadata, "risk_level": risk_val}
+        elif isinstance(result, SkillResult):
+            # Failed SkillResult — honour it as-is
+            return result
+        else:
+            # Skill returned a raw value (str/dict/etc.) — wrap it
+            output = result
+            meta = {"risk_level": risk_val}
+
+        # Truncate large string outputs
+        if isinstance(output, str) and len(output) > MAX_RESULT_CHARS:
+            output = (
+                output[:MAX_RESULT_CHARS]
+                + f"\n\n[Output truncated — {len(output) - MAX_RESULT_CHARS} chars omitted]"
             )
-            result = SkillResult.ok(
-                skill_name=result.skill_name,
-                skill_call_id=result.skill_call_id,
-                output=truncated_output,
-                duration_ms=duration,
-                metadata={**result.metadata, "truncated": True},
-            )
+            meta["truncated"] = True
+
+        result = SkillResult.ok(
+            skill_name=call.skill_name,
+            skill_call_id=call.id,
+            output=output,
+            duration_ms=duration,
+            metadata=meta,
+        )
 
         _log("info", 
             "skill_bus.success",
@@ -386,27 +411,6 @@ class SkillBus:
             duration_ms=round(duration, 1),
         )
         return result
-
-    # ── Safety evaluation ─────────────────────────────────────────────────────
-
-    async def _evaluate_safety(self, call: SkillCall, skill, trust_level: TrustLevel):
-        """
-        Evaluate safety for a skill call.
-        SafetyKernel.evaluate() accepts SkillCall/SkillManifest/TrustLevel natively.
-        Returns a SafetyDecision or None (if safety kernel is unavailable).
-        """
-        if self._safety is None:
-            return None
-
-        try:
-            return await self._safety.evaluate(
-                skill_call=call,
-                manifest=skill.manifest,
-                trust_level=trust_level,
-            )
-        except BaseException as e:
-            _log("warning", "skill_bus.safety_eval_error", error=str(e), error_type=type(e).__name__)
-            return None
 
     async def _handle_confirmation(
         self,

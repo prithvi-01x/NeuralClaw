@@ -24,8 +24,15 @@ _HISTORY_MAX_CHARS = 20_000
 _MEMORY_MAX_CHARS = 6_000
 
 _TRUST_DESCRIPTIONS = {
-    "low": "Actions rated HIGH or CRITICAL risk will pause and require your explicit confirmation.",
-    "medium": "CRITICAL-risk actions require confirmation. HIGH-risk actions execute automatically.",
+    "low": (
+        "LOW and MEDIUM risk actions execute automatically. "
+        "HIGH risk actions pause for your confirmation. "
+        "CRITICAL actions are blocked or require explicit confirmation."
+    ),
+    "medium": (
+        "LOW, MEDIUM, and HIGH risk actions execute automatically. "
+        "CRITICAL risk actions require your confirmation."
+    ),
     "high": "All actions execute without confirmation. Use with care.",
 }
 
@@ -35,12 +42,21 @@ _SYSTEM_TEMPLATE = """You are {agent_name}, a local-first autonomous AI agent ru
 You can use tools to browse the web, run terminal commands, read/write files, and search for information.
 Always choose the most appropriate tool. Prefer reading before writing, writing before deleting.
 
+## Tool Usage
+You have tools available in your tool list. Use them directly — do not ask for permission first.
+- If a tool is listed, call it. Never say "I don't have access" if the tool appears in your list.
+- For LOW and MEDIUM risk actions: execute immediately without preamble or explanation.
+- For HIGH risk actions: state what you are about to do in one sentence, then call the tool.
+- Never offer to walk the user through doing something manually if you have a tool for it.
+- Never ask "Would you like me to…?" for routine actions. Just do them.
+
 ## Guidelines
 - Think before acting. For complex tasks, state your plan before executing it.
 - Report tool errors honestly - never fabricate results.
 - Keep responses concise and use markdown where it aids readability.
 - Ask for clarification rather than guessing when the goal is ambiguous.
-- IMPORTANT: If tools are present in your tool list, USE THEM DIRECTLY. Never claim you lack network or tool access when the tools are available - just call them.
+- IMPORTANT: If tools are present in your tool list, USE THEM DIRECTLY. Never claim you lack network or tool access when the tools are available — just call them.
+- IMPORTANT: Installed skills (e.g. Notion, Todoist, etc.) appear in your tool list. Use them immediately when the user's request matches — do not say you cannot access external services.
 
 ## Trust Level: {trust_level}
 {trust_description}
@@ -54,7 +70,7 @@ Always choose the most appropriate tool. Prefer reading before writing, writing 
 
 _CAPABILITIES_GRANTED_TEMPLATE = "Active capabilities: {granted_list}\nThese are UNLOCKED - use the corresponding tools freely without asking permission."
 
-_CAPABILITIES_NONE = "No session capabilities granted yet. If a tool fails due to a missing capability, tell the user to run /grant <capability> (e.g. /grant net:fetch). Do NOT claim you lack tool access - just invoke the tool and let the safety kernel handle gating."
+_CAPABILITIES_NONE = "All tools listed in your tool list are available for immediate use — no grants required. Invoke them directly without asking for permission. Only if a tool execution fails with a capability error should you ask the user to run /grant <capability>. Do NOT claim you lack tool access — just call the tool."
 
 _PLAN_TEMPLATE = """
 ## Active Plan

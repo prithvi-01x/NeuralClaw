@@ -1,0 +1,72 @@
+{
+  "dns-enum": {
+    "file": "cyber_dns_enum.py",
+    "installed_at": "2026-02-26T11:53:52.722412+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "cyber"
+  },
+  "port-scan": {
+    "file": "cyber_port_scan.py",
+    "installed_at": "2026-02-26T11:53:52.724428+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "cyber"
+  },
+  "git-blame": {
+    "file": "dev_git_blame.py",
+    "installed_at": "2026-02-26T11:53:52.735104+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "developer"
+  },
+  "git-diff": {
+    "file": "dev_git_diff.py",
+    "installed_at": "2026-02-26T11:53:52.735877+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "developer"
+  },
+  "git-log": {
+    "file": "dev_git_log.py",
+    "installed_at": "2026-02-26T11:53:52.736628+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "developer"
+  },
+  "daily-brief": {
+    "file": "meta_daily_assistant.py",
+    "installed_at": "2026-02-26T11:53:52.740868+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "meta"
+  },
+  "news": {
+    "file": "personal_news_digest.py",
+    "installed_at": "2026-02-26T11:53:52.744103+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "personal"
+  },
+  "reminder": {
+    "file": "personal_reminder_set.py",
+    "installed_at": "2026-02-26T11:53:52.745300+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "personal"
+  },
+  "weather": {
+    "file": "personal_weather_fetch.py",
+    "installed_at": "2026-02-26T11:53:52.746408+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "personal"
+  },
+  "disk-usage": {
+    "file": "system_disk_usage.py",
+    "installed_at": "2026-02-26T11:53:52.747499+00:00",
+    "version": "1.0.0",
+    "source": "plugin",
+    "category": "system"
+  }
+}

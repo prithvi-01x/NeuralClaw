@@ -74,11 +74,29 @@ class SkillRegistry:
     def is_registered(self, name: str) -> bool:
         return name in self._skills
 
-    def list_manifests(self, enabled_only: bool = True) -> list[SkillManifest]:
-        """Return all manifests, optionally filtering to enabled skills only."""
+    def list_manifests(
+        self,
+        enabled_only: bool = True,
+        granted: frozenset[str] | None = None,
+    ) -> list[SkillManifest]:
+        """
+        Return all manifests, optionally filtering to enabled skills and
+        skills that fit the granted capabilities.
+        Empty capabilities mean the skill is always available.
+        """
         manifests = list(self._manifests.values())
         if enabled_only:
             manifests = [m for m in manifests if m.enabled]
+        
+        if granted is not None:
+            filtered = []
+            for m in manifests:
+                if not m.capabilities:
+                    filtered.append(m)
+                elif m.capabilities.issubset(granted):
+                    filtered.append(m)
+            manifests = filtered
+            
         return manifests
 
     def list_names(self, enabled_only: bool = True) -> list[str]:
@@ -90,9 +108,13 @@ class SkillRegistry:
 
     # ── Orchestrator-compat aliases (mirrors ToolRegistry API) ────────────────
 
-    def list_schemas(self, enabled_only: bool = True) -> list[SkillManifest]:
+    def list_schemas(
+        self,
+        enabled_only: bool = True,
+        granted: frozenset[str] | None = None,
+    ) -> list[SkillManifest]:
         """Alias for list_manifests(). Keeps orchestrator API surface identical."""
-        return self.list_manifests(enabled_only=enabled_only)
+        return self.list_manifests(enabled_only=enabled_only, granted=granted)
 
     def get_schema(self, name: str) -> Optional[SkillManifest]:
         """Alias for get_manifest(). Returns None (not raise) for unknown names."""

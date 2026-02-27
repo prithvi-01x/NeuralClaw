@@ -45,11 +45,20 @@ class SafetyKernel:
 
     def __init__(
         self,
-        allowed_paths:   Optional[list[str]] = None,
-        whitelist_extra: Optional[list[str]] = None,
+        allowed_paths:            Optional[list[str]] = None,
+        whitelist_extra:          Optional[list[str]] = None,
+        require_confirmation_for: Optional[list[str]] = None,
     ) -> None:
         self._allowed_paths   = allowed_paths   or []
         self._whitelist_extra = whitelist_extra or []
+        # Risk levels that trigger CONFIRM_NEEDED at LOW trust.
+        # Defaults to ["HIGH", "CRITICAL"] if not specified.
+        _default_confirm = {"HIGH", "CRITICAL"}
+        self._confirm_levels: frozenset[str] = (
+            frozenset(r.upper() for r in require_confirmation_for)
+            if require_confirmation_for is not None
+            else frozenset(_default_confirm)
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public API
@@ -154,8 +163,8 @@ class SafetyKernel:
     # Internals
     # ─────────────────────────────────────────────────────────────────────────
 
-    @staticmethod
     def _apply_trust(
+        self,
         risk:     RiskLevel,
         trust:    TrustLevel,
         reason:   str,
@@ -164,9 +173,12 @@ class SafetyKernel:
         """
         Map (risk, trust) → (SafetyStatus, final_reason).
 
-        Trust=LOW:    confirm on HIGH+  (block on CRITICAL if not confirmable)
-        Trust=MEDIUM: confirm on CRITICAL only
+        Uses self._confirm_levels (from config.yaml safety.require_confirmation_for)
+        to decide which risk levels need confirmation.
+
         Trust=HIGH:   auto-approve everything
+        Trust=MEDIUM: confirm on CRITICAL only
+        Trust=LOW:    confirm on anything in the confirm set
         """
         requires_confirm = getattr(manifest, "requires_confirmation", False)
 
@@ -180,13 +192,11 @@ class SafetyKernel:
                 return SafetyStatus.BLOCKED, f"CRITICAL risk auto-blocked at MEDIUM trust: {reason}"
             return SafetyStatus.APPROVED, reason
 
-        # trust == LOW (default)
-        if risk == RiskLevel.CRITICAL:
-            if requires_confirm:
-                return SafetyStatus.CONFIRM_NEEDED, f"CRITICAL risk requires confirmation: {reason}"
-            return SafetyStatus.BLOCKED, f"CRITICAL risk auto-blocked at LOW trust: {reason}"
-        if risk == RiskLevel.HIGH:
-            return SafetyStatus.CONFIRM_NEEDED, f"HIGH risk requires confirmation: {reason}"
+        # trust == LOW (default) — use configured confirmation levels
+        if risk.value in self._confirm_levels:
+            if requires_confirm or risk != RiskLevel.CRITICAL:
+                return SafetyStatus.CONFIRM_NEEDED, f"{risk.value} risk requires confirmation: {reason}"
+            return SafetyStatus.BLOCKED, f"{risk.value} risk auto-blocked at LOW trust: {reason}"
         return SafetyStatus.APPROVED, reason
 
     @staticmethod

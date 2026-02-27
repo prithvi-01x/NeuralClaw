@@ -326,7 +326,16 @@ class TestCmdClear:
 
 class TestCmdCancel:
     def test_sets_cancel_on_session(self, cli, mock_session):
+        """When no task is running, cancel should NOT set the cancel event (prevents stale cancel)."""
         assert not mock_session.is_cancelled()
+        cli._cmd_cancel()
+        # No running task → cancel should be cleared, not set
+        assert not mock_session.is_cancelled()
+
+    def test_cancel_with_running_task(self, cli, mock_session):
+        """When a task IS running, cancel should set the cancel event."""
+        import asyncio
+        cli._running_task = asyncio.Future()  # simulate a running task
         cli._cmd_cancel()
         assert mock_session.is_cancelled()
 
@@ -346,8 +355,42 @@ class TestCmdStatus:
 
 class TestCmdTools:
     def test_renders_table(self, cli):
+        from skills.types import SkillManifest
+        fake_manifest = SkillManifest(
+            name="test_skill",
+            version="1.0.0",
+            description="A test skill for unit testing",
+            category="testing",
+            risk_level=RiskLevel.LOW,
+            parameters={"properties": {"arg1": {"type": "string", "description": "test arg"}}, "required": ["arg1"]},
+        )
+        cli._skill_bus._registry.list_schemas.return_value = [fake_manifest]
         cli.console = MagicMock()
         cli._cmd_tools()
+        cli.console.print.assert_called()
+
+    def test_no_tools_message(self, cli):
+        cli._skill_bus._registry.list_schemas.return_value = []
+        cli.console = MagicMock()
+        cli._cmd_tools()
+        cli.console.print.assert_called()
+        call_args = str(cli.console.print.call_args)
+        assert "No tools" in call_args
+
+    def test_skill_detail(self, cli):
+        from skills.types import SkillManifest
+        fake_manifest = SkillManifest(
+            name="file_read",
+            version="1.0.0",
+            description="Read a file from the filesystem",
+            category="filesystem",
+            risk_level=RiskLevel.MEDIUM,
+            parameters={"properties": {"path": {"type": "string", "description": "file path"}}, "required": ["path"]},
+            capabilities=frozenset({"fs:read"}),
+        )
+        cli._skill_bus._registry.get_manifest.return_value = fake_manifest
+        cli.console = MagicMock()
+        cli._cmd_skill_detail("file_read")
         cli.console.print.assert_called()
 
 

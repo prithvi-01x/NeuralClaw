@@ -47,24 +47,14 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-try:
-    from observability.logger import get_logger as _get_logger
-    _log_raw = _get_logger(__name__)
-    _STRUCTLOG = True
-except ImportError:
-    import logging as _logging
-    _log_raw = _logging.getLogger(__name__)
-    _STRUCTLOG = False
+from observability.compat import get_safe_logger, safe_log
+
+_log_raw = get_safe_logger(__name__)
 
 
 def log(level: str, event: str, **kwargs) -> None:
     """Portable structured logger — works with structlog and stdlib logging."""
-    if _STRUCTLOG:
-        getattr(_log_raw, level)(event, **kwargs)
-    else:
-        extra = " ".join(f"{k}={v}" for k, v in kwargs.items())
-        msg = f"{event} {extra}" if extra else event
-        getattr(_log_raw, level)(msg)
+    safe_log(_log_raw, level, event, **kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -22,10 +22,10 @@ Phase 3 (core-hardening): New file.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from observability.logger import get_logger
-from exceptions import NeuralClawError
 
 log = get_logger(__name__)
 
@@ -75,7 +75,9 @@ class Reflector:
                 steps_taken=steps_taken,
                 outcome=outcome,
             )
-        except Exception as e:
+        except asyncio.CancelledError:
+            raise
+        except (OSError, RuntimeError, ValueError) as e:
             log.warning("reflector.lesson_extract_failed", error=str(e), error_type=type(e).__name__)
 
         if lesson:
@@ -85,7 +87,9 @@ class Reflector:
                     lesson,
                     context=goal,
                 )
-            except Exception as e:
+            except asyncio.CancelledError:
+                raise
+            except (OSError, RuntimeError, ValueError) as e:
                 log.warning("reflector.lesson_store_failed", error=str(e), error_type=type(e).__name__)
 
         # ── Commit the episode record ─────────────────────────────────────────
@@ -102,7 +106,9 @@ class Reflector:
                     tool_count=session.tool_call_count,
                     turn_count=session.turn_count,
                 )
-            except Exception as e:
+            except asyncio.CancelledError:
+                raise
+            except (OSError, RuntimeError, ValueError) as e:
                 log.warning("reflector.episode_commit_failed", error=str(e), error_type=type(e).__name__)
 
         log.info(

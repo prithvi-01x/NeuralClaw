@@ -43,7 +43,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from exceptions import NeuralClawError, MemoryError as NeuralClawMemoryError, LLMError
+from exceptions import NeuralClawError
 
 from agent.orchestrator import Orchestrator
 from agent.response_synthesizer import AgentResponse, ResponseKind
@@ -52,23 +52,21 @@ from brain import LLMClientFactory
 from config.settings import Settings
 from memory.memory_manager import MemoryManager
 from observability.logger import get_logger
+from skills.types import TrustLevel, KNOWN_CAPABILITIES
+from skills.registry import SkillRegistry
+from skills.bus import SkillBus
 from safety.safety_kernel import SafetyKernel
-from skills.types import TrustLevel
-
-# Skill system
-from pathlib import Path as _SkillPath
-from skills.loader import SkillLoader as _SkillLoader
-from skills.md_loader import MarkdownSkillLoader as _MdSkillLoader
-from skills.bus import SkillBus as _SkillBus
+from skills.discovery import (
+    fuzzy_search_skills, skill_detail, group_by_category,
+    skill_type_icon, missing_grant_hints,
+)
 
 from interfaces.model_selector import (
     build_telegram_model_keyboard,
     build_telegram_model_keyboard_async,
     format_telegram_model_list,
-    fetch_ollama_options,
     build_llm_client_for_model,
     save_default_model,
-    load_default_model,
     current_model_key,
     MODEL_OPTIONS,
 )
@@ -97,6 +95,12 @@ class TelegramBot:
         self._active_models: dict[int, str] = {}
         # Pending default selection (chat_id → last selected model_key)
         self._pending_default: dict[int, str] = {}
+        # Most recent update per chat — used by _stream_callback
+        self._latest_update: dict[int, Update] = {}
+        # Shared infrastructure — loaded once at start(), reused by all chats
+        self._skill_registry: Optional[SkillRegistry] = None
+        self._safety_kernel: Optional[SafetyKernel] = None
+        self._skill_bus: Optional[SkillBus] = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -115,6 +119,13 @@ class TelegramBot:
             relevance_threshold=self._settings.memory.relevance_threshold,
         )
         await self._memory.init()
+
+        # Load shared skill infrastructure once for all chats
+        from kernel.bootstrap import load_shared_skills
+        shared = load_shared_skills(self._settings)
+        self._skill_registry = shared.skill_registry
+        self._safety_kernel = shared.safety_kernel
+        self._skill_bus = shared.skill_bus
 
         # Build the application — support optional HTTPS/SOCKS5 proxy
         import os as _os
@@ -163,6 +174,8 @@ class TelegramBot:
         app.add_handler(CommandHandler("status", self._cmd_status))
         app.add_handler(CommandHandler("memory", self._cmd_memory))
         app.add_handler(CommandHandler("tools", self._cmd_tools))
+        app.add_handler(CommandHandler("skill", self._cmd_skill_detail))
+        app.add_handler(CommandHandler("skills", self._cmd_skills))
         app.add_handler(CommandHandler("trust", self._cmd_trust))
         app.add_handler(CommandHandler("grant", self._cmd_grant))
         app.add_handler(CommandHandler("revoke", self._cmd_revoke))
@@ -219,66 +232,23 @@ class TelegramBot:
 
             llm_client = LLMClientFactory.from_settings(self._settings)
 
-            allowed_paths = (
-                self._settings.tools.filesystem.allowed_paths
-                or ["./data/agent_files"]
-            )
-            extra_cmds = self._settings.tools.terminal.whitelist_extra or []
-            safety = SafetyKernel(
-                allowed_paths=allowed_paths,
-                whitelist_extra=extra_cmds,
-            )
-
-            # Bug 11 fix: the original closure captured `update` at orchestrator
-            # creation time.  If the user sent a second message while the first
-            # was still running, _stream_callback would reply to the *old*
-            # update object, sending responses to the wrong message context.
-            #
-            # Fix: store the latest update on the TelegramInterface instance
-            # (keyed by chat_id) and read it inside the callback so it always
-            # refers to the most-recently-active update for that chat.
-            self._latest_update: dict[int, Update] = getattr(
-                self, "_latest_update", {}
-            )
             self._latest_update[chat_id] = update
 
             def _stream_callback(resp: AgentResponse) -> None:
-                # Read the current update at callback-invocation time, not at
-                # orchestrator-creation time, so concurrent messages are safe.
                 current_update = self._latest_update.get(chat_id)
                 if current_update is not None:
                     asyncio.create_task(
                         self._send_response(chat_id, resp, current_update)
                     )
 
-
-
-            # Skill registry + SkillBus for this chat's orchestrator
-            _base = _SkillPath(__file__).parent.parent
-            _skill_registry = _SkillLoader().load_all(
-                [
-                    _base / "skills" / "builtin",
-                    _base / "skills" / "plugins",
-                ],
-                strict=True,   # production: raise on broken skill files
-            )
-            # Also load markdown skills (OpenClaw-compatible SKILL.md format)
-            _MdSkillLoader().load_all(
-                [_base / "skills" / "plugins"],
-                registry=_skill_registry,
-                strict=False,
-            )
-            _skill_bus = _SkillBus(
-                registry=_skill_registry,
-                safety_kernel=safety,
-                default_timeout_seconds=self._settings.tools.terminal.default_timeout_seconds,
-            )
-
+            # Per-chat: only a lightweight LLM client + Orchestrator.
+            # SkillRegistry, SafetyKernel, and SkillBus are shared singletons
+            # loaded once at start() — no per-chat duplication.
             self._orchestrators[chat_id] = Orchestrator.from_settings(
                 settings=self._settings,
                 llm_client=llm_client,
-                tool_bus=_skill_bus,
-                tool_registry=_skill_registry,
+                tool_bus=self._skill_bus,
+                tool_registry=self._skill_registry,
                 memory_manager=self._memory,
                 on_response=_stream_callback,
             )
@@ -431,6 +401,7 @@ class TelegramBot:
         )
 
     async def _cmd_tools(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """U4+U5+U6: List tools with icons, grant hints, and inline keyboard."""
         if not await self._auth_check(update):
             return
         chat_id = update.effective_chat.id
@@ -440,13 +411,141 @@ class TelegramBot:
             await update.message.reply_text("No tools registered.")
             return
 
+        grouped = group_by_category(schemas)
         lines = ["🔧 *Registered Tools*\n"]
-        for s in sorted(schemas, key=lambda x: x.name):
-            risk_icon = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}.get(
-                s.risk_level.value, "⚪"
-            )
-            lines.append(f"{risk_icon} `{s.name}` — {s.description[:80]}")
+        for category, skills in grouped.items():
+            lines.append(f"*{category.upper()}*")
+            for s in skills:
+                icon = skill_type_icon(s)
+                risk_icon = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🟠", "CRITICAL": "🔴"}.get(
+                    s.risk_level.value, "⚪"
+                )
+                lines.append(f"{icon}{risk_icon} `{s.name}` — {s.description[:60]}")
+            lines.append("")
 
+        # U5: Grant hint
+        session = self._get_session(chat_id)
+        missing = missing_grant_hints(schemas, session.granted_capabilities)
+        if missing:
+            hint_caps = ", ".join(missing[:3])
+            lines.append(f"💡 `/grant {missing[0]}` to enable more skills.")
+            lines.append(f"Ungranted: {hint_caps}")
+
+        # U6: Inline keyboard — each skill gets a detail button
+        buttons = []
+        for s in sorted(schemas, key=lambda x: x.name)[:10]:  # top 10 to avoid huge keyboard
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{skill_type_icon(s)} {s.name}",
+                    callback_data=f"skill_detail:{s.name}",
+                )
+            ])
+        keyboard = InlineKeyboardMarkup(buttons) if buttons else None
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
+
+    async def _cmd_skill_detail(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """U2: Show full detail view for a skill."""
+        if not await self._auth_check(update):
+            return
+        name = (ctx.args[0] if ctx.args else "").strip()
+        if not name:
+            await update.message.reply_text(
+                "Usage: `/skill <name>`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        chat_id = update.effective_chat.id
+        orc = self._get_orchestrator(chat_id, update)
+        manifest = orc._registry.get_manifest(name)
+
+        if manifest is None:
+            all_schemas = orc._registry.list_schemas(enabled_only=False)
+            close = fuzzy_search_skills(all_schemas, name)
+            if close:
+                suggestions = ", ".join(f"`{s.name}`" for s in close[:3])
+                await update.message.reply_text(
+                    f"Skill '{name}' not found. Did you mean: {suggestions}?",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            else:
+                await update.message.reply_text(f"Skill '{name}' not found.")
+            return
+
+        detail_text = skill_detail(manifest)
+
+        # Add grant button if user lacks required caps
+        session = self._get_session(chat_id)
+        missing_caps = manifest.capabilities - session.granted_capabilities
+        keyboard = None
+        if missing_caps:
+            buttons = [
+                [InlineKeyboardButton(
+                    f"Grant {cap}",
+                    callback_data=f"grant_cap:{cap}",
+                )]
+                for cap in sorted(missing_caps)
+            ]
+            keyboard = InlineKeyboardMarkup(buttons)
+
+        await update.message.reply_text(
+            detail_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
+
+    async def _cmd_skills(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """U1+U3: /skills search <query> or /skills --category <name>."""
+        if not await self._auth_check(update):
+            return
+        args_text = " ".join(ctx.args) if ctx.args else ""
+        chat_id = update.effective_chat.id
+        orc = self._get_orchestrator(chat_id, update)
+        schemas = orc._registry.list_schemas(enabled_only=True)
+
+        if not args_text:
+            # No args — show grouped list (same as /tools)
+            await self._cmd_tools(update, ctx)
+            return
+
+        if args_text.lower().startswith("search "):
+            query = args_text[7:].strip()
+        elif args_text.lower().startswith("--category "):
+            category = args_text[11:].strip().lower()
+            matching = [s for s in schemas if s.category.lower() == category]
+            if not matching:
+                categories = sorted({s.category for s in schemas})
+                await update.message.reply_text(
+                    f"No skills in category '{category}'.\nAvailable: {', '.join(categories)}"
+                )
+                return
+            lines = [f"📂 *{category.upper()} skills*\n"]
+            for s in sorted(matching, key=lambda x: x.name):
+                icon = skill_type_icon(s)
+                lines.append(f"{icon} `{s.name}` — {s.description[:60]}")
+            await update.message.reply_text(
+                "\n".join(lines), parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        else:
+            query = args_text
+
+        # Fuzzy search
+        results = fuzzy_search_skills(schemas, query)
+        if not results:
+            await update.message.reply_text(f"No skills matching '{query}'.")
+            return
+
+        lines = [f"🔍 *Search results for '{query}':*\n"]
+        for s in results:
+            icon = skill_type_icon(s)
+            lines.append(f"{icon} `{s.name}` — {s.description[:60]}")
+        lines.append("\nUse /skill <name> for full details.")
         await update.message.reply_text(
             "\n".join(lines), parse_mode=ParseMode.MARKDOWN
         )
@@ -495,7 +594,7 @@ class TelegramBot:
         if not capability:
             await update.message.reply_text(
                 "Usage: `/grant <capability>`\n"
-                "Examples: `fs:read`  `fs:write`  `fs:delete`  `net:fetch`  `shell:exec`",
+                "Examples: `fs:read`  `fs:write`  `fs:delete`  `net:fetch`  `shell:run`",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -541,20 +640,14 @@ class TelegramBot:
         session = self._get_session(chat_id)
         active = sorted(session.granted_capabilities)
 
-        _ALL_CAPS = {
-            "fs:read":   "Read files within allowed paths",
-            "fs:write":  "Write and append files",
-            "fs:delete": "Delete files",
-            "shell:run": "Execute whitelisted terminal commands",
-            "net:fetch": "Fetch URLs and web searches",
-        }
+        _caps = KNOWN_CAPABILITIES
 
         lines = ["🔐 *Session Capabilities*\n"]
-        for cap, desc in _ALL_CAPS.items():
+        for cap, desc in _caps.items():
             icon = "✅" if cap in active else "⬜"
             lines.append(f"{icon} `{cap}` — {desc}")
 
-        extras = [c for c in active if c not in _ALL_CAPS]
+        extras = [c for c in active if c not in _caps]
         for cap in extras:
             lines.append(f"✅ `{cap}` — _(custom)_")
 
@@ -610,12 +703,51 @@ class TelegramBot:
     async def _on_confirm_callback(
         self, update: Update, ctx: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Handle inline button presses for tool confirmation, trust change, or model selection."""
+        """Handle inline button presses for tool confirmation, trust change, model, or skill detail."""
         query = update.callback_query
         await query.answer()
 
         data = query.data or ""
         chat_id = update.effective_chat.id
+
+        # ── U6: Skill detail inline button ─────────────────────────────────────
+        if data.startswith("skill_detail:"):
+            skill_name = data.split(":", 1)[1]
+            orc = self._get_orchestrator(chat_id, update)
+            manifest = orc._registry.get_manifest(skill_name)
+            if manifest:
+                detail_text = skill_detail(manifest)
+                # Add grant buttons for missing caps
+                session = self._get_session(chat_id)
+                missing_caps = manifest.capabilities - session.granted_capabilities
+                keyboard = None
+                if missing_caps:
+                    buttons = [
+                        [InlineKeyboardButton(
+                            f"Grant {cap}",
+                            callback_data=f"grant_cap:{cap}",
+                        )]
+                        for cap in sorted(missing_caps)
+                    ]
+                    keyboard = InlineKeyboardMarkup(buttons)
+                await query.edit_message_text(
+                    detail_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                )
+            else:
+                await query.edit_message_text(f"Skill '{skill_name}' not found.")
+            return
+
+        if data.startswith("grant_cap:"):
+            cap = data.split(":", 1)[1]
+            session = self._get_session(chat_id)
+            session.grant_capability(cap)
+            await query.edit_message_text(
+                f"✅ Capability `{cap}` granted for this session.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
 
         # ── Model selection ───────────────────────────────────────────────────
 
@@ -677,16 +809,7 @@ class TelegramBot:
 
             orch = self._orchestrators.get(chat_id)
             if orch:
-                try:
-                    orch.swap_llm_client(new_client, new_model_id=opt.model_id)
-                except AttributeError:
-                    orch._llm = new_client
-                    if hasattr(orch, "_config"):
-                        orch._config.model = opt.model_id
-                    if hasattr(orch, "_planner") and hasattr(orch._planner, "_config"):
-                        orch._planner._config.model = opt.model_id
-                    if hasattr(orch, "_reasoner") and hasattr(orch._reasoner, "_config"):
-                        orch._reasoner._config.model = opt.model_id
+                orch.swap_llm_client(new_client, new_model_id=opt.model_id)
 
             self._active_models[chat_id] = model_key
             self._pending_default[chat_id] = model_key

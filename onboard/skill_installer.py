@@ -42,10 +42,8 @@ except ImportError:
 
     class Console:  # type: ignore[no-redef]
         def print(self, *a, **kw):
-            import re
-            text = " ".join(str(x) for x in a)
-            text = re.sub(r"\[/?[a-zA-Z_ ]+\]", "", text)
-            print(text)
+            from interfaces.branding import safe_print
+            safe_print(*a)
 
     class Progress:  # type: ignore[no-redef]
         def __enter__(self): return self

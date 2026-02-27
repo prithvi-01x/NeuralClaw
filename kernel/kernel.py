@@ -195,16 +195,43 @@ class AgentKernel:
         safety_kernel = SafetyKernel(
             allowed_paths=cfg.allowed_paths,
             whitelist_extra=cfg.whitelist_extra,
+            require_confirmation_for=settings.safety.require_confirmation_for,
         )
         log.info("kernel.safety_ready")
 
         # ── Skill bus ────────────────────────────────────────────────────────
-        from skills.bus import SkillBus
+        from skills.bus import SkillBus, configure_retry_policy
         skill_bus = SkillBus(
             registry=skill_registry,
             safety_kernel=safety_kernel,
         )
+        # Apply config.yaml skills.retry.* to the bus's retry policy
+        configure_retry_policy(settings)
         log.info("kernel.bus_ready")
+
+        # ── ClawHub bridge loader ────────────────────────────────────────────
+        if hasattr(settings, "clawhub") and settings.clawhub.enabled:
+            try:
+                from skills.clawhub.bridge_loader import ClawhubBridgeLoader
+                from brain.types import LLMConfig as _BrainCfg
+                clawhub_loader = ClawhubBridgeLoader()
+                _clawhub_llm_cfg = _BrainCfg(
+                    model=cfg.llm_model,
+                    temperature=cfg.llm_temperature,
+                    max_tokens=cfg.llm_max_tokens,
+                )
+                clawhub_loader.load_all(
+                    skills_dir=Path(settings.clawhub.skills_dir),
+                    registry=skill_registry,
+                    settings=settings,
+                    llm_client=llm_client,
+                    llm_config=_clawhub_llm_cfg,
+                    skill_bus=skill_bus,
+                )
+                log.info("kernel.clawhub_ready",
+                         skills_dir=settings.clawhub.skills_dir)
+            except Exception as e:
+                log.warning("kernel.clawhub_load_failed", error=str(e))
 
         # ── Orchestrator (wires planner, executor, reflector internally) ─────
         from brain.types import LLMConfig as BrainLLMConfig

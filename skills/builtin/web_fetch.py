@@ -7,6 +7,7 @@ Fetches a URL and returns cleaned text content with prompt-injection defence.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Optional
 
@@ -126,7 +127,7 @@ class WebFetchSkill(SkillBase):
 
             return SkillResult.ok(
                 skill_name=self.manifest.name, skill_call_id=call_id,
-                output=_UNTRUSTED_PREFIX + str(output) + _UNTRUSTED_SUFFIX,
+                output=_UNTRUSTED_PREFIX + json.dumps(output, default=str) + _UNTRUSTED_SUFFIX,
             )
         except (OSError, ValueError, RuntimeError) as e:
             return SkillResult.fail(self.manifest.name, call_id, f"{type(e).__name__}: {e}", type(e).__name__)

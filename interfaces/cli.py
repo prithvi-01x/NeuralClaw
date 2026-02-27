@@ -39,7 +39,6 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm
-from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 from rich import box
@@ -48,9 +47,7 @@ from agent.orchestrator import Orchestrator
 from interfaces.model_selector import (
     run_model_selector,
     build_llm_client_for_model,
-    fetch_ollama_options,
     save_default_model,
-    load_default_model,
     current_model_key,
     MODEL_OPTIONS,
 )
@@ -60,28 +57,19 @@ from brain import LLMClientFactory
 from config.settings import Settings
 from memory.memory_manager import MemoryManager
 from observability.logger import get_logger
-from safety.safety_kernel import SafetyKernel
-from skills.types import TrustLevel
+from skills.types import TrustLevel, KNOWN_CAPABILITIES
+from kernel.bootstrap import bootstrap_agent_stack
+from skills.discovery import (
+    fuzzy_search_skills, skill_detail, group_by_category,
+    skill_type_icon, missing_grant_hints,
+)
 from exceptions import NeuralClawError, MemoryError as NeuralClawMemoryError, LLMError
-
-# Skill system — loads builtin + plugin skills at startup
-from pathlib import Path as _SkillPath
-from skills.loader import SkillLoader as _SkillLoader
-from skills.md_loader import MarkdownSkillLoader as _MdSkillLoader
-from skills.bus import SkillBus as _SkillBus
 
 log = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_BANNER = """
-███╗   ██╗███████╗██╗   ██╗██████╗  █████╗ ██╗      ██████╗██╗      █████╗ ██╗    ██╗
-████╗  ██║██╔════╝██║   ██║██╔══██╗██╔══██╗██║     ██╔════╝██║     ██╔══██╗██║    ██║
-██╔██╗ ██║█████╗  ██║   ██║██████╔╝███████║██║     ██║     ██║     ███████║██║ █╗ ██║
-██║╚██╗██║██╔══╝  ██║   ██║██╔══██╗██╔══██║██║     ██║     ██║     ██╔══██║██║███╗██║
-██║ ╚████║███████╗╚██████╔╝██║  ██║██║  ██║███████╗╚██████╗███████╗██║  ██║╚███╔███╔╝
-╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝
-"""
+from interfaces.branding import NEURALCLAW_BANNER as _BANNER
 
 _HELP_TEXT = """
 ## NeuralClaw CLI Commands
@@ -102,8 +90,10 @@ _HELP_TEXT = """
 | `/compact` | Summarise old turns and compress context window |
 | `/usage` | Show token usage and estimated cost for this session |
 | `/clear` | Clear conversation history |
-| `/cancel` | Cancel the current running task |
-| `/help` | Show this help message |
+| `/cancel`               | Cancel the current running task |
+| `/reload-skills`        | Hot-reload all skills from disk without restarting |
+| `/setkey <NAME> <VALUE>` | Save an API key to .env and load into current session |
+| `/help`                 | Show this help message |
 | `exit` / `quit` / Ctrl+D | Exit NeuralClaw |
 
 **Trust Levels:**
@@ -154,6 +144,7 @@ class CLIInterface:
         self._session: Optional[Session] = None
         self._orchestrator: Optional[Orchestrator] = None
         self._memory: Optional[MemoryManager] = None
+        self._llm_client = None   # set in _init_components
         self._scheduler = None
         self._running_task: Optional[asyncio.Task] = None
         self._shutdown = asyncio.Event()
@@ -181,6 +172,7 @@ class CLIInterface:
         except (LLMError, ValueError, KeyError, ImportError) as e:
             self.console.print(f"[red]❌ Failed to create LLM client: {e}[/]")
             sys.exit(1)
+        self._llm_client = llm_client
 
         # Memory manager
         self._memory = MemoryManager.from_settings(self.settings)
@@ -191,34 +183,15 @@ class CLIInterface:
             self.console.print(f"[yellow]⚠ Memory init warning: {e}[/]")
             await self._memory.init(load_embedder=False)
 
-        # Safety kernel
-        allowed_paths = self.settings.tools.filesystem.allowed_paths
-        extra_commands = self.settings.tools.terminal.whitelist_extra
-        safety_kernel = SafetyKernel(
-            allowed_paths=allowed_paths,
-            whitelist_extra=extra_commands,
+        # Agent stack — shared bootstrap pipeline
+        stack = bootstrap_agent_stack(
+            settings=self.settings,
+            llm_client=llm_client,
+            memory_manager=self._memory,
+            on_response=self._on_streamed_response,
         )
-
-        # Skill registry + bus — loaded from builtin/ and plugins/
-        _base = _SkillPath(__file__).parent.parent
-        _skill_registry = _SkillLoader().load_all(
-            [
-                _base / "skills" / "builtin",
-                _base / "skills" / "plugins",
-            ],
-            strict=True,   # production: raise on broken skill files
-        )
-        # Also load markdown skills (OpenClaw-compatible SKILL.md format)
-        _MdSkillLoader().load_all(
-            [_base / "skills" / "plugins"],
-            registry=_skill_registry,
-            strict=False,  # warn on bad MD files, don't crash startup
-        )
-        self._skill_bus = _SkillBus(
-            registry=_skill_registry,
-            safety_kernel=safety_kernel,
-            default_timeout_seconds=self.settings.tools.terminal.default_timeout_seconds,
-        )
+        self._skill_bus = stack.skill_bus
+        self._orchestrator = stack.orchestrator
 
         # Session
         default_trust = self.settings.agent.default_trust_level
@@ -231,16 +204,6 @@ class CLIInterface:
         # Register the Session's ShortTermMemory in MemoryManager so both
         # share the same object — prevents ghost-session desync (finding #3).
         self._memory._sessions[self._session.id] = self._session.memory
-
-        # Orchestrator — wired to SkillBus + SkillRegistry
-        self._orchestrator = Orchestrator.from_settings(
-            settings=self.settings,
-            llm_client=llm_client,
-            tool_bus=self._skill_bus,
-            tool_registry=_skill_registry,
-            memory_manager=self._memory,
-            on_response=self._on_streamed_response,
-        )
 
         log.info("cli.initialized", session_id=self._session.id)
 
@@ -403,7 +366,8 @@ class CLIInterface:
                 "/compact": lambda _: self._cmd_compact(),
                 "/usage":   lambda _: self._cmd_usage(),
                 "/tools":   lambda _: self._cmd_tools(),
-                "/skills":  lambda _: self._cmd_tools(),
+                "/skill":   self._cmd_skill_detail,
+                "/skills":  self._cmd_skills_dispatch,
                 "/clear":   lambda _: self._cmd_clear(),
                 "/cancel":  lambda _: self._cmd_cancel(),
                 "/model":   lambda _: self._cmd_model(),
@@ -412,9 +376,12 @@ class CLIInterface:
                 "/revoke":  self._cmd_revoke,
                 "/capabilities": lambda _: self._cmd_capabilities(),
                 "/resetcaps":   lambda _: self._cmd_resetcaps(),
+                "/reload-skills": lambda _: self._cmd_reload_skills(),
+                "/setkey":  self._cmd_setkey,
                 "/memory":  self._cmd_memory,
                 "/run":     self._cmd_run,
                 "/ask":     self._cmd_ask,
+                "/clawhub": self._cmd_clawhub,
             }
 
             handler = handlers.get(cmd)
@@ -468,17 +435,7 @@ class CLIInterface:
             return
 
         # Hot-swap client AND model ID across orchestrator, planner, and reasoner
-        try:
-            self._orchestrator.swap_llm_client(new_client, new_model_id=model_id)
-        except AttributeError:
-            # Fallback for older orchestrator without swap_llm_client
-            self._orchestrator._llm = new_client
-            if hasattr(self._orchestrator, "_config"):
-                self._orchestrator._config.model = model_id
-            if hasattr(self._orchestrator, "_planner") and hasattr(self._orchestrator._planner, "_config"):
-                self._orchestrator._planner._config.model = model_id
-            if hasattr(self._orchestrator, "_reasoner") and hasattr(self._orchestrator._reasoner, "_config"):
-                self._orchestrator._reasoner._config.model = model_id
+        self._orchestrator.swap_llm_client(new_client, new_model_id=model_id)
 
         # Update settings so prompt and banner reflect the new model
         self.settings.llm.default_provider = provider
@@ -657,24 +614,97 @@ class CLIInterface:
                 f"the context window.[/]\n"
             )
 
+    def _cmd_setkey(self, arg: str) -> None:
+        """Save an API key to .env and load it into the current process."""
+        parts = arg.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            self.console.print(
+                "[yellow]Usage:[/] /setkey <NAME> <VALUE>\n"
+                "  Example: /setkey NOTION_API_KEY ntn-abc123..."
+            )
+            return
+
+        key_name, key_value = parts[0].upper(), parts[1]
+
+        # Write to .env
+        from pathlib import Path
+        env_path = Path(__file__).parent.parent / ".env"
+        lines: list[str] = []
+        replaced = False
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in stripped:
+                    existing_key = stripped.split("=", 1)[0].strip()
+                    if existing_key == key_name:
+                        lines.append(f"{key_name}={key_value}")
+                        replaced = True
+                        continue
+                lines.append(line)
+        if not replaced:
+            lines.append(f"{key_name}={key_value}")
+        env_path.write_text("\n".join(lines) + "\n")
+
+        # Also load into current process
+        import os
+        os.environ[key_name] = key_value
+
+        # Show confirmation with masked value
+        masked = key_value[:4] + "*" * max(0, len(key_value) - 8) + key_value[-4:] if len(key_value) > 8 else "****"
+        self.console.print(
+            f"[green]✓[/] Saved [bold]{key_name}[/] = {masked}\n"
+            f"  → Written to [dim]{env_path}[/]\n"
+            f"  → Loaded into current session (no restart needed)"
+        )
+
+    def _cmd_reload_skills(self) -> None:
+        """Hot-reload all skills from disk without restarting."""
+        from pathlib import Path
+        from skills.loader import SkillLoader
+        from skills.md_loader import MarkdownSkillLoader
+        from skills.clawhub.bridge_loader import ClawhubBridgeLoader
+
+        _base = Path(__file__).parent.parent
+
+        # Clear existing registrations
+        registry = self._skill_bus._registry
+        old_count = len(registry)
+        registry._skills.clear()
+        registry._manifests.clear()
+
+        # Reload Python skills from builtin/ and plugins/
+        dirs = [_base / "skills" / "builtin", _base / "skills" / "plugins"]
+        SkillLoader().load_all(dirs, strict=False, registry=registry)
+
+        # Reload markdown skills from plugins/
+        md_dirs = [_base / "skills" / "plugins"]
+        MarkdownSkillLoader().load_all(md_dirs, registry=registry, strict=False)
+
+        # Reload ClawHub skills with full config so executors work correctly
+        ClawhubBridgeLoader().load_all(
+            skills_dir=Path(self.settings.clawhub.skills_dir),
+            registry=registry,
+            settings=self.settings,
+            llm_client=self._llm_client,
+            skill_bus=self._skill_bus,
+        )
+
+        new_count = len(registry)
+        self.console.print(
+            f"[green]✓[/] Reloaded skills: {new_count} registered "
+            f"(was {old_count})"
+        )
+
+        # Invalidate orchestrator caches so LLM sees updated schemas
+        self._orchestrator._cached_tool_schemas = None
+        self._orchestrator._cached_md_instructions = None
+
     def _cmd_tools(self) -> None:
-        """List all registered tools."""
+        """List all registered tools, grouped by category (U3) with type icons (U4)."""
         schemas = self._skill_bus._registry.list_schemas(enabled_only=False)
         if not schemas:
             self.console.print("[dim]No tools registered.[/]")
             return
-
-        table = Table(
-            title="Registered Tools",
-            box=box.ROUNDED,
-            border_style="dim",
-            show_lines=False,
-        )
-        table.add_column("Name", style="cyan bold", no_wrap=True)
-        table.add_column("Category", style="dim")
-        table.add_column("Risk", no_wrap=True)
-        table.add_column("Enabled", no_wrap=True)
-        table.add_column("Description")
 
         risk_colours = {
             "LOW": "green",
@@ -683,20 +713,132 @@ class CLIInterface:
             "CRITICAL": "red",
         }
 
-        for s in sorted(schemas, key=lambda x: x.category):
-            risk_str = s.risk_level.value
-            risk_colour = risk_colours.get(risk_str, "white")
-            enabled_str = "✓" if s.enabled else "✗"
-            enabled_colour = "green" if s.enabled else "dim red"
-            table.add_row(
-                s.name,
-                s.category,
-                f"[{risk_colour}]{risk_str}[/]",
-                f"[{enabled_colour}]{enabled_str}[/]",
-                s.description[:60] + ("…" if len(s.description) > 60 else ""),
+        grouped = group_by_category(schemas)
+        for category, skills in grouped.items():
+            table = Table(
+                title=f"  {category.upper()}",
+                box=box.ROUNDED,
+                border_style="dim",
+                show_lines=False,
+            )
+            table.add_column("Type", no_wrap=True, width=2)
+            table.add_column("Name", style="cyan bold", no_wrap=True)
+            table.add_column("Risk", no_wrap=True)
+            table.add_column("Enabled", no_wrap=True)
+            table.add_column("Description")
+
+            for s in skills:
+                icon = skill_type_icon(s)
+                risk_str = s.risk_level.value
+                risk_colour = risk_colours.get(risk_str, "white")
+                enabled_str = "✓" if s.enabled else "✗"
+                enabled_colour = "green" if s.enabled else "dim red"
+                table.add_row(
+                    icon,
+                    s.name,
+                    f"[{risk_colour}]{risk_str}[/]",
+                    f"[{enabled_colour}]{enabled_str}[/]",
+                    s.description[:60] + ("…" if len(s.description) > 60 else ""),
+                )
+
+            self.console.print(table)
+
+        # U5: Grant hint — show ungranted caps that have associated skills
+        granted = self._session.granted_capabilities
+        missing = missing_grant_hints(schemas, granted)
+        if missing:
+            hint_caps = ", ".join(missing[:5])
+            self.console.print(
+                f"\n[dim yellow]💡 Grant capabilities with [bold]/grant {missing[0]}[/bold] "
+                f"to enable more skills.\n"
+                f"   Ungranted: {hint_caps}[/]"
             )
 
-        self.console.print(table)
+    async def _cmd_skills_dispatch(self, arg: str) -> None:
+        """Route /skills subcommands: search, --category, or plain list."""
+        arg = arg.strip()
+        if not arg:
+            self._cmd_tools()
+            return
+
+        # /skills search <query>  (U1)
+        if arg.lower().startswith("search "):
+            query = arg[7:].strip()
+            self._cmd_skills_search(query)
+            return
+
+        # /skills --category <name>  (U3)
+        if arg.lower().startswith("--category "):
+            category = arg[11:].strip().lower()
+            self._cmd_skills_by_category(category)
+            return
+
+        # Fallback: treat as search
+        self._cmd_skills_search(arg)
+
+    def _cmd_skills_search(self, query: str) -> None:
+        """U1: Fuzzy search skills by name + description."""
+        schemas = self._skill_bus._registry.list_schemas(enabled_only=False)
+        results = fuzzy_search_skills(schemas, query)
+
+        if not results:
+            self.console.print(f"[dim]No skills matching '{query}'.[/]")
+            return
+
+        self.console.print(f"[bold]🔍 Search results for '{query}':[/]\n")
+        for s in results:
+            icon = skill_type_icon(s)
+            self.console.print(
+                f"  {icon} [cyan bold]{s.name}[/] — {s.description[:60]}"
+            )
+        self.console.print(
+            f"\n[dim]Use /skill <name> for full details.[/]"
+        )
+
+    def _cmd_skills_by_category(self, category: str) -> None:
+        """U3: Filter skills by category."""
+        schemas = self._skill_bus._registry.list_schemas(enabled_only=False)
+        matching = [s for s in schemas if s.category.lower() == category]
+
+        if not matching:
+            categories = sorted({s.category for s in schemas})
+            self.console.print(
+                f"[yellow]No skills in category '{category}'.\n"
+                f"Available: {', '.join(categories)}[/]"
+            )
+            return
+
+        self.console.print(f"[bold]📂 {category.upper()} skills:[/]\n")
+        for s in sorted(matching, key=lambda x: x.name):
+            icon = skill_type_icon(s)
+            self.console.print(
+                f"  {icon} [cyan bold]{s.name}[/] — {s.description[:60]}"
+            )
+
+    def _cmd_skill_detail(self, name: str) -> None:
+        """U2: Show full detail view for a skill."""
+        name = name.strip()
+        if not name:
+            self.console.print("[yellow]Usage: /skill <name>[/]")
+            return
+
+        manifest = self._skill_bus._registry.get_manifest(name)
+        if manifest is None:
+            # Try fuzzy match
+            all_schemas = self._skill_bus._registry.list_schemas(enabled_only=False)
+            close = fuzzy_search_skills(all_schemas, name)
+            if close:
+                suggestions = ", ".join(s.name for s in close[:3])
+                self.console.print(
+                    f"[yellow]Skill '{name}' not found. Did you mean: {suggestions}?[/]"
+                )
+            else:
+                self.console.print(f"[yellow]Skill '{name}' not found.[/]")
+            return
+
+        from rich.markdown import Markdown
+        detail_md = skill_detail(manifest)
+        self.console.print(Markdown(detail_md))
 
     def _cmd_clear(self) -> None:
         """Clear conversation history."""
@@ -706,18 +848,27 @@ class CLIInterface:
     def _cmd_cancel(self) -> None:
         """
         Cancel the current running task.
+
+        If nothing is running, clears any stale cancel signal so the next
+        turn is not silently aborted.
         """
+        # Nothing is running — clear any stale cancel flag and inform the user.
+        if not self._running_task or self._running_task.done():
+            # Clear a stale cancel event so the next turn executes normally.
+            self._session._cancel_event.clear()
+            self.console.print("[dim]Nothing is currently running to cancel.[/]")
+            return
+
         if self._session.is_cancelled():
-            self.console.print("[dim]Already cancelled.[/]")
+            self.console.print("[dim]Already cancelling...[/]")
             return
 
         self._session.cancel()
-
-        if self._running_task and not self._running_task.done():
-            self._running_task.cancel()
+        self._running_task.cancel()
 
         if self._session.active_plan:
-            self.console.print("[yellow]🛑 Cancel signal sent.[/]")
+            plan_name = getattr(self._session.active_plan, 'name', 'current plan')
+            self.console.print(f"[yellow]🛑 Cancelled active plan: {plan_name}[/]")
         else:
             self.console.print("[yellow]🛑 Cancel signal sent.[/]")
 
@@ -753,17 +904,31 @@ class CLIInterface:
     async def _cmd_grant(self, capability: str) -> None:
         """Grant a capability to the current session.
 
-        Usage: /grant <capability>
-        Example capabilities: fs:read  fs:write  fs:delete  net:fetch  shell:exec
+        Usage: /grant <capability_or_skill>
+        Example capabilities: fs:read  fs:write  fs:delete  net:fetch  shell:run
+        Example skill: /grant notion
         """
         capability = capability.strip()
         if not capability:
             self.console.print(
-                "[yellow]Usage: /grant <capability>[/]\n"
-                "[dim]Examples: fs:read  fs:write  fs:delete  net:fetch  shell:exec[/]"
+                "[yellow]Usage: /grant <capability_or_skill>[/]\n"
+                "[dim]Examples: fs:read  fs:write  fs:delete  net:fetch  shell:run  notion[/]"
             )
             return
 
+        # If it's a known skill, grant all its required capabilities
+        schema = self._skill_bus._registry.get_schema(capability)
+        if schema and schema.capabilities:
+            for cap in schema.capabilities:
+                self._session.grant_capability(cap)
+            self.console.print(
+                f"[green]✓ Granted {len(schema.capabilities)} capabilities "
+                f"required by skill '[bold]{capability}[/bold]'.[/]\n"
+                f"[dim]Active capabilities: {sorted(self._session.granted_capabilities)}[/]"
+            )
+            return
+
+        # Otherwise, treat it as a direct capability string
         self._session.grant_capability(capability)
         self.console.print(
             f"[green]✓ Capability '[bold]{capability}[/bold]' granted for this session.[/]\n"
@@ -797,15 +962,6 @@ class CLIInterface:
         """Show all granted capabilities for this session."""
         active = sorted(self._session.granted_capabilities)
 
-        # All known capabilities across builtin skills
-        _ALL_CAPS = {
-            "fs:read":   "Read files within allowed paths",
-            "fs:write":  "Write and append files within allowed paths",
-            "fs:delete": "Delete files (requires explicit grant)",
-            "shell:run": "Execute whitelisted terminal commands",
-            "net:fetch": "Fetch URLs and perform web searches",
-        }
-
         table = Table(
             title="Session Capabilities",
             box=box.ROUNDED,
@@ -815,7 +971,7 @@ class CLIInterface:
         table.add_column("Status", no_wrap=True)
         table.add_column("Description")
 
-        for cap, desc in _ALL_CAPS.items():
+        for cap, desc in KNOWN_CAPABILITIES.items():
             if cap in active:
                 status = "[green]✓ granted[/]"
             else:
@@ -823,7 +979,7 @@ class CLIInterface:
             table.add_row(cap, status, desc)
 
         # Show any extra caps that aren't in the known list
-        extras = [c for c in active if c not in _ALL_CAPS]
+        extras = [c for c in active if c not in KNOWN_CAPABILITIES]
         for cap in extras:
             table.add_row(cap, "[green]✓ granted[/]", "[dim](custom)[/]")
 
@@ -863,6 +1019,22 @@ class CLIInterface:
             f"[green]✓ Tool support reset for [bold]{provider}/{model}[/bold].[/]\n"
             "[dim]The next turn will attempt to use tools again.[/]"
         )
+
+    async def _cmd_clawhub(self, arg: str) -> None:
+        """Manage ClawHub skills: search, install, list, info, remove."""
+        parts = arg.strip().split()
+        if not parts:
+            action, args = "", []
+        else:
+            action, args = parts[0], parts[1:]
+
+        from onboard.clawhub_installer import clawhub_command
+        res = await clawhub_command(
+            action=action, args=args,
+            settings=self.settings, console=self.console,
+        )
+        if action == "install" and res == 0:
+            self._cmd_reload_skills()
 
     async def _cmd_memory(self, query: str) -> None:
         """Search long-term memory."""
@@ -984,38 +1156,7 @@ class CLIInterface:
         status = "[green]✓ Approved[/]" if approved else "[red]✗ Denied[/]"
         self.console.print(f"  {status}\n")
 
-    async def _handle_confirmation_async(self, response: AgentResponse) -> None:
-        """
-        Async confirmation handler — runs the blocking stdin read in a thread
-        so the asyncio event loop stays live (timeouts keep ticking, bg tasks
-        keep running) while we wait for the user to type y/n.
-        """
-        self.console.print()
-        self.console.print(
-            Panel(
-                Markdown(response.text),
-                title="[bold yellow]⚠ Confirmation Required[/]",
-                border_style="yellow",
-                padding=(0, 2),
-            )
-        )
 
-        loop = asyncio.get_running_loop()
-        # run_in_executor releases the event loop while stdin blocks
-        approved = await loop.run_in_executor(
-            None,
-            lambda: Confirm.ask(
-                "  Allow this action?",
-                default=False,
-                console=self.console,
-            ),
-        )
-
-        if response.tool_call_id:
-            self._session.resolve_confirmation(response.tool_call_id, approved)
-
-        status = "[green]✓ Approved[/]" if approved else "[red]✗ Denied[/]"
-        self.console.print(f"  {status}\n")
 
     def _on_streamed_response(self, response: AgentResponse) -> None:
         """

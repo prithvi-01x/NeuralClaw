@@ -11,6 +11,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Optional
 
 from skills.base import SkillBase
 from skills.types import RiskLevel, SkillManifest, SkillResult, SkillValidationError

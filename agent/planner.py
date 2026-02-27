@@ -14,7 +14,6 @@ from typing import Optional
 from brain.llm_client import BaseLLMClient
 from brain.types import LLMConfig, Message
 from observability.logger import get_logger
-from exceptions import NeuralClawError
 
 log = get_logger(__name__)
 

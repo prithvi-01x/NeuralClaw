@@ -29,7 +29,7 @@ Usage:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Optional
 
 
@@ -170,6 +170,13 @@ _MODEL_OVERRIDES: list[tuple[str, str, ModelCapabilities]] = [
     ("ollama", "moondream",         ModelCapabilities(supports_tools=False, supports_vision=True,  supports_stream=True)),
     ("ollama", "llama3.2-vision",   ModelCapabilities(supports_tools=True,  supports_vision=True,  supports_stream=True)),
 ]
+
+# Pre-index overrides by provider for O(1) lookup instead of O(N) linear scan.
+# Built once at module load time from _MODEL_OVERRIDES.
+_OVERRIDES_BY_PROVIDER: dict[str, list[tuple[str, ModelCapabilities]]] = {}
+for _pat_provider, _pattern, _caps in _MODEL_OVERRIDES:
+    _OVERRIDES_BY_PROVIDER.setdefault(_pat_provider, []).append((_pattern, _caps))
+del _pat_provider, _pattern, _caps  # clean up module namespace
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -329,13 +336,12 @@ def _resolve(provider: str, model_id: str) -> ModelCapabilities:
         return runtime
 
     # 2. Per-model overrides — find the most specific matching pattern
+    #    Uses pre-indexed dict keyed by provider for O(1) provider lookup.
     #    "More specific" = longer pattern length
     best_match: Optional[ModelCapabilities] = None
     best_len = -1
 
-    for (pat_provider, pattern, caps) in _MODEL_OVERRIDES:
-        if pat_provider != provider:
-            continue
+    for (pattern, caps) in _OVERRIDES_BY_PROVIDER.get(provider, []):
         # Normalize pattern (strip trailing colon used as word-boundary marker)
         pat = pattern.rstrip(":").lower()
         if model_id.startswith(pat) or pat in model_id:
@@ -408,4 +414,4 @@ async def probe_ollama_tool_support(model_id: str, base_url: str = "http://local
 
     except (OSError, RuntimeError, ValueError, AttributeError):
         # If we can't probe, fall back to static pattern matching
-        return known.supports_tools
+        return get_capabilities("ollama", model_id).supports_tools

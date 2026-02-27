@@ -2,10 +2,12 @@
 main.py — NeuralClaw Entry Point
 
 Usage:
-    python main.py                          # CLI interface, default settings
-    python main.py --interface telegram     # Telegram bot
-    python main.py --interface cli          # CLI REPL (explicit)
-    python main.py --log-level DEBUG        # Verbose logging
+    python main.py                              # CLI interface, default settings
+    python main.py --interface telegram         # Telegram bot
+    python main.py --interface cli              # CLI REPL (explicit)
+    python main.py --interface gateway          # WebSocket gateway server
+    python main.py --interface gateway-cli      # CLI over gateway
+    python main.py --log-level DEBUG            # Verbose logging
     python main.py --config path/to/config.yaml
 """
 
@@ -53,9 +55,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--interface",
-        choices=["cli", "telegram", "voice", "voice-app"],
+        choices=["cli", "telegram", "voice", "voice-app", "gateway", "gateway-cli", "webui"],
         default="cli",
-        help="Interface to start (default: cli). voice-app = voice + Qt tray/overlay (Phase H)",
+        help=(
+            "Interface to start (default: cli). "
+            "gateway = WebSocket control plane server. "
+            "gateway-cli = lightweight CLI over gateway. "
+            "webui = web browser interface."
+        ),
+    )
+    parser.add_argument(
+        "--gateway-url",
+        default=None,
+        help="WebSocket URL for gateway-cli (default: ws://host:port from config)",
     )
     parser.add_argument(
         "--config",
@@ -173,6 +185,18 @@ async def main() -> int:
         from onboard.skill_installer import run_list_available
         return run_list_available(filter_str=args.subcommand_arg or "")
 
+    if args.subcommand == "clawhub":
+        # Route: python main.py clawhub <action> [arg]
+        action = args.subcommand_arg or ""
+        # Re-parse remaining args from sys.argv for clawhub
+        extra_args = sys.argv[3:] if len(sys.argv) > 3 else []
+        settings_for_clawhub, _ = bootstrap(args)
+        from onboard.clawhub_installer import clawhub_command
+        return await clawhub_command(
+            action=action, args=extra_args,
+            settings=settings_for_clawhub,
+        )
+
     # ── Normal agent startup ───────────────────────────────────────────────────
     settings, log = bootstrap(args)
 
@@ -259,6 +283,16 @@ async def main() -> int:
     elif args.interface == "voice-app":
         log.info("neuralclaw.interface_starting", interface="voice-app")
         _run_voice_app(settings, log)
+    elif args.interface == "gateway":
+        log.info("neuralclaw.interface_starting", interface="gateway")
+        await _run_gateway(settings, log)
+    elif args.interface == "gateway-cli":
+        log.info("neuralclaw.interface_starting", interface="gateway-cli")
+        url = args.gateway_url or f"ws://{settings.gateway.host}:{settings.gateway.port}"
+        await _run_gateway_cli(settings, log, gateway_url=url)
+    elif args.interface == "webui":
+        log.info("neuralclaw.interface_starting", interface="webui")
+        await _run_webui(settings, log)
 
     return 0
 
@@ -341,6 +375,127 @@ async def _run_telegram(settings, log) -> None:
     except (OSError, RuntimeError) as e:
         log.exception("telegram.crashed", error=str(e), error_type=type(e).__name__)
         raise
+
+
+async def _run_gateway(settings, log) -> None:
+    """
+    Launch the WebSocket gateway server.
+
+    Wires up the full agent stack and exposes it over WebSocket.
+    All interfaces can connect as thin clients.
+    """
+    from kernel.kernel import AgentKernel
+    from gateway.gateway_server import GatewayServer
+    from gateway.session_store import SessionStore
+
+    log.info("gateway.building_kernel")
+    kernel = await AgentKernel.build(settings)
+
+    session_store = SessionStore()
+    server = GatewayServer(
+        orchestrator=kernel.orchestrator,
+        session_store=session_store,
+        skill_registry=kernel.skill_registry,
+        host=settings.gateway.host,
+        port=settings.gateway.port,
+        auth_token=settings.gateway.auth_token,
+        max_connections=settings.gateway.max_connections,
+    )
+
+    print(
+        f"\n🌐 NeuralClaw Gateway listening on "
+        f"ws://{settings.gateway.host}:{settings.gateway.port}\n"
+        f"   Press Ctrl+C to stop.\n"
+    )
+
+    await server.start()
+
+    try:
+        # Keep running until interrupted
+        stop = asyncio.Event()
+        await stop.wait()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        log.info("gateway.stopping")
+    finally:
+        await server.shutdown()
+        kernel.shutdown()
+
+
+async def _run_gateway_cli(settings, log, gateway_url: str) -> None:
+    """
+    Launch the lightweight CLI that connects through the gateway.
+    No orchestrator is created — everything goes over WebSocket.
+    """
+    from interfaces.gateway_cli import run_gateway_cli
+
+    log.info("gateway_cli.starting", url=gateway_url)
+    await run_gateway_cli(
+        gateway_url=gateway_url,
+        auth_token=settings.gateway.auth_token,
+    )
+
+
+async def _run_webui(settings, log) -> None:
+    """
+    Launch the Web UI: Gateway WebSocket server + static HTTP file server.
+
+    - Gateway (WebSocket) on settings.gateway.port (default 9090)
+    - Web UI (HTTP) on port 8080
+    - Auto-opens the browser
+    """
+    import webbrowser
+    from kernel.kernel import AgentKernel
+    from gateway.gateway_server import GatewayServer
+    from gateway.session_store import SessionStore
+    from gateway.webui_server import start_webui_server
+
+    log.info("webui.building_kernel")
+    kernel = await AgentKernel.build(settings)
+
+    session_store = SessionStore()
+
+    # Start WebSocket gateway
+    gw_server = GatewayServer(
+        orchestrator=kernel.orchestrator,
+        session_store=session_store,
+        skill_registry=kernel.skill_registry,
+        host=settings.gateway.host,
+        port=settings.gateway.port,
+        auth_token=settings.gateway.auth_token,
+        max_connections=settings.gateway.max_connections,
+    )
+    await gw_server.start()
+
+    # Start HTTP static file server
+    http_port = 8080
+    httpd = await start_webui_server(
+        host=settings.gateway.host,
+        port=http_port,
+    )
+
+    url = f"http://{settings.gateway.host}:{http_port}"
+    print(
+        f"\n🌐 NeuralClaw Web UI\n"
+        f"   Web UI:    {url}\n"
+        f"   Gateway:   ws://{settings.gateway.host}:{settings.gateway.port}\n"
+        f"   Press Ctrl+C to stop.\n"
+    )
+
+    # Open browser
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass  # No browser available — that's fine
+
+    try:
+        stop = asyncio.Event()
+        await stop.wait()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        log.info("webui.stopping")
+    finally:
+        httpd.shutdown()
+        await gw_server.shutdown()
+        kernel.shutdown()
 
 
 if __name__ == "__main__":

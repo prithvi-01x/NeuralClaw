@@ -38,22 +38,9 @@ from skills.md_skill import MarkdownSkill
 from skills.registry import SkillRegistry
 from skills.types import RiskLevel, SkillManifest, SkillValidationError
 
-try:
-    from observability.logger import get_logger as _get_logger
-    _log = _get_logger(__name__)
-    _STRUCTLOG = True
-except ImportError:
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
-    _STRUCTLOG = False
+from observability.logger import portable_log
 
-
-def _log_msg(level: str, event: str, **kwargs) -> None:
-    if _STRUCTLOG:
-        getattr(_log, level)(event, **kwargs)
-    else:
-        extra = " ".join(f"{k}={v}" for k, v in kwargs.items())
-        getattr(_log, level)("%s %s", event, extra)
+_log_msg = portable_log(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

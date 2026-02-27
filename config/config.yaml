@@ -145,3 +145,21 @@ skills:
         max_attempts: 1   # never retry shell commands (not idempotent)
       web_fetch:
         max_attempts: 3
+
+# ── ClawHub Bridge Adapter ───────────────────────────────────────────────────
+clawhub:
+  enabled: true
+  skills_dir: "./data/clawhub/skills"
+  registry_url: "https://clawhub.ai"
+  execution:
+    allow_binary_skills: true
+    auto_install_deps: false          # require explicit opt-in for auto-installing
+    sandbox_binary_skills: true
+  env:
+    block_on_missing_env: true
+    show_env_requirements_on_install: true
+  risk_defaults:
+    prompt_only: "LOW"
+    api_http: "LOW"
+    binary_execution: "HIGH"
+    install_directive: "HIGH"
