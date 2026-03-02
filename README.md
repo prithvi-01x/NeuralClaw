@@ -26,7 +26,7 @@
 
 ## What is NeuralClaw?
 
-NeuralClaw is an all-in-one autonomous AI agent that runs anywhere — 6 LLM providers (Ollama, OpenAI, Anthropic, Gemini, Bytez, OpenRouter), 6 interfaces (CLI, Web UI, Voice, Telegram, Gateway, Qt), zero-trust safety kernel, dual memory (SQLite + ChromaDB), and a pluggable skill bus with ClawHub community support.
+NeuralClaw is all-in-one autonomous AI agent that runs anywhere — 6 LLM providers (Ollama, OpenAI, Anthropic, Gemini, Bytez, OpenRouter), 6 interfaces (CLI, Web UI, Voice, Telegram, Gateway, Qt), zero-trust safety kernel, dual memory (SQLite + ChromaDB), and a pluggable skill bus with ClawHub community support.
 
 Unlike most agent frameworks that lock you into one LLM or one interface, NeuralClaw is designed to be provider-agnostic and interface-agnostic from day one. Switch models mid-session with `/model`. Run fully offline with Ollama. Deploy as a Telegram bot, voice assistant, or browser UI — same core, different face.
 
